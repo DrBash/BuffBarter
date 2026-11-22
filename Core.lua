@@ -22,7 +22,8 @@ local DEFAULTS = {
   askCampCounts = false,     -- your own camp buff counts as having it
   myLang = (GetLocale() == "deDE") and "de" or "en", -- default whisper language
   useLinks = true,
-  oneClick = true,           -- icon click targets the player by name, casts, retargets
+  oneClick = true,
+  askMaxBelow = 5,           -- only ask players at most this many levels below you           -- icon click targets the player by name, casts, retargets
   pvpMode = "warn",          -- PvP flagged targets: "warn" or "block"           -- {buff} and {ask} as clickable spell links
   playerLang = {},           -- ["First-Last"] = "de"|"en", via /barter lang
   templates = {},            -- [lang][CLASS] = text, overrides defaults
@@ -597,6 +598,13 @@ local function CanWhisper()
   return true
 end
 
+-- Low level players only have low ranks: buff them, but do not ask them.
+local ASK_LEVEL_STEPS = { 3, 5, 10, 15, 60 }   -- 60 = any level
+local function LevelOK(level)
+  if not level or level <= 0 or db.askMaxBelow >= 60 then return true end
+  return level >= (UnitLevel("player") or 1) - db.askMaxBelow
+end
+
 function ns.Remember(unit, fam)
   if not UnitExists(unit) or not fam then return end
   local full, short, realm = FullName(unit)
@@ -604,6 +612,7 @@ function ns.Remember(unit, fam)
   local raceName, race = UnitRace(unit)
   if not full or UnitIsUnit(unit, "player") then return end
   pending = { full = full, short = short, realm = realm, class = class, race = race, raceName = raceName,
+              level = UnitLevel(unit),
               fam = fam, t = GetTime() }
 end
 
@@ -707,7 +716,7 @@ local function OnOwnCast(spellID)
   if not p then return end
   pcall(RecordGiven, p.full, p.class, fam, p.race, p.raceName)
   if p.fromBar then return end -- only ask back after buffs given through BuffBarter
-  if not db.askBack or not CanWhisper() then return end
+  if not db.askBack or not CanWhisper() or not LevelOK(p.level) then return end
   if askedAt[p.full] and GetTime() - askedAt[p.full] < ASK_COOLDOWN then return end
   local text = BuildAsk(p.full, p.short, p.realm, p.class, p.fam)
   if not text then return end
@@ -841,6 +850,7 @@ function ns.RefreshReq(unit)
     ns.ReleaseReq(unit); return
   end
   local _, class = UnitClass(unit)
+  if not LevelOK(UnitLevel(unit)) then ns.ReleaseReq(unit); return end
   local ok, fam = pcall(RequestFamily, class)
   if not ok or not fam then ns.ReleaseReq(unit); return end
   local full = FullName(unit)
@@ -1440,6 +1450,25 @@ BuildOptions = function()
   Check(L.OPT_ASK, "askBack")
   Check(L.OPT_ASK_MISSING, "askOnlyIfMissing")
   Check(L.OPT_ASK_CAMP, "askCampCounts")
+  do
+    local btn = CreateFrame("Button", nil, c, "UIPanelButtonTemplate")
+    btn:SetSize(470, 24)
+    btn:SetPoint("TOPLEFT", 10, y)
+    local function label()
+      local v = db.askMaxBelow >= 60 and L.LEVEL_ANY or tostring(db.askMaxBelow)
+      btn:SetText(L.OPT_ASK_LEVEL:format(v))
+    end
+    btn:SetScript("OnClick", function()
+      local nextValue = ASK_LEVEL_STEPS[1]
+      for i, v in ipairs(ASK_LEVEL_STEPS) do
+        if v == db.askMaxBelow then nextValue = ASK_LEVEL_STEPS[i % #ASK_LEVEL_STEPS + 1] end
+      end
+      db.askMaxBelow = nextValue
+      label(); RebuildAll()
+    end)
+    label()
+    y = y - 30
+  end
   Check(L.OPT_LINKS, "useLinks")
   LangButton(L.OPT_MYLANG, "myLang")
 
