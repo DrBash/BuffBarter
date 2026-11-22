@@ -5,6 +5,9 @@
 ## Author: Sascha
 ## Version: @project-version@
 ## SavedVariables: BuffBarterDB
+## X-Curse-Project-ID: 1823182
+## X-License: MIT
+## X-Website: https://github.com/DrBash/BuffBarter
 
 Locales.lua
 Data.lua
