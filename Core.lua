@@ -1200,7 +1200,9 @@ local function BuildStatsFrame()
   f.rows, f.heads = {}, {}
 
   f.footer = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-  f.footer:SetPoint("BOTTOMRIGHT", -14, 16)
+  f.footer:SetPoint("BOTTOMRIGHT", -14, 18)
+  f.footer:SetPoint("LEFT", f, "BOTTOMLEFT", 162, 0)
+  f.footer:SetJustifyH("RIGHT")
 
   local reset = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
   reset:SetSize(140, 22)
@@ -1272,8 +1274,8 @@ local function BuildStatsFrame()
     local asked = (a.afterBuff or 0) + (a.requests or 0)
     local function pct(x, y) return y > 0 and math.floor(x * 100 / y + 0.5) or 0 end
     local tiles = {
-      { g.total, L.STATS_TILE_GIVEN, L.STATS_PLAYERS:format(buffedUnique), GOLD },
-      { r.total, L.STATS_TILE_RECEIVED, L.STATS_PLAYERS:format(Count(r.players)), BLUE },
+      { g.total, L.STATS_TILE_GIVEN, (buffedUnique == 1 and L.STATS_PLAYER or L.STATS_PLAYERS):format(buffedUnique), GOLD },
+      { r.total, L.STATS_TILE_RECEIVED, (Count(r.players) == 1 and L.STATS_PLAYER or L.STATS_PLAYERS):format(Count(r.players)), BLUE },
       { pct(back, buffedUnique) .. "%", L.STATS_TILE_BACK, L.STATS_OF:format(back, buffedUnique), { 0.45, 0.9, 0.45 } },
       { pct(a.answered or 0, asked) .. "%", L.STATS_TILE_ANSWER, L.STATS_OF:format(a.answered or 0, asked), { 0.8, 0.55, 1 } },
     }
