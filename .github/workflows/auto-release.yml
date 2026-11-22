@@ -42,7 +42,16 @@ jobs:
           git tag -a "$v" -m "BuffBarter $v"
           git push origin "$v"
           echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "tag=$v" >> "$GITHUB_OUTPUT"
 
+      # The packager skips a branch build whose commit already carries a tag
+        # ("Found future tag"), expecting a separate tag run. Tags pushed by this
+        # workflow never start one, so run the packager as if this were that run.
       - name: Package and upload to CurseForge
         if: steps.tag.outputs.skip == 'false'
-        uses: BigWigsMods/packager@v2
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/BigWigsMods/packager/v2/release.sh -o "$RUNNER_TEMP/release.sh"
+          GITHUB_REF="refs/tags/$TAG" GITHUB_REF_TYPE=tag GITHUB_REF_NAME="$TAG" \
+            bash "$RUNNER_TEMP/release.sh"
