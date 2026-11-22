@@ -1,0 +1,11 @@
+## Interface: 16001
+## Title: BuffBarter
+## Notes: Buff nearby players from their nameplates, ask for buffs back, request buffs, camp buff aware, stats.
+## Notes-deDE: Spieler in der Nähe über ihre Namensplakette buffen, um Gegenbuffs bitten, Buffs anfragen, Lagerbuffs, Statistik.
+## Author: Sascha
+## Version: @project-version@
+## SavedVariables: BuffBarterDB
+
+Locales.lua
+Data.lua
+Core.lua

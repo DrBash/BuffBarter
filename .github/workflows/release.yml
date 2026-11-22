@@ -1,0 +1,23 @@
+name: Package and upload
+
+# Push a tag like v1.0.0 to build the zip and upload it to CurseForge.
+# Tags with "beta" or "alpha" in the name are uploaded as beta or alpha files.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      CF_API_KEY: ${{ secrets.CF_API_KEY }}
+      GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: BigWigsMods/packager@v2
