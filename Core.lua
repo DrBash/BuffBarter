@@ -552,6 +552,18 @@ local function PlayerHas(fam)
   return res
 end
 
+-- Did this player already give me a blessing? (One blessing per paladin:
+-- asking for another one would only replace it.)
+local function HasBlessingFrom(unit)
+  if not unit or not UnitExists(unit) then return false end
+  local found = false
+  pcall(ForEachBuff, "player", function(name, id, src, exp)
+    local f = (id and idToFamily[id]) or (name and nameToFamily[name])
+    if f and ns.BUFFS[f].blessing and src and UnitIsUnit(src, unit) then found = true end
+  end)
+  return found
+end
+
 local function Lacking(fam)
   local has = PlayerHas(fam)
   if has == "class" then return false end
@@ -647,6 +659,7 @@ function ns.Remember(unit, fam)
   local raceName, race = UnitRace(unit)
   if not full or UnitIsUnit(unit, "player") then return end
   pending = { full = full, short = short, realm = realm, class = class, race = race, raceName = raceName,
+              unit = unit,
               level = UnitLevel(unit),
               fam = fam, t = GetTime() }
 end
@@ -753,6 +766,7 @@ local function OnOwnCast(spellID)
   if p.fromBar then return end -- only ask back after buffs given through BuffBarter
   if not db.askBack or not CanWhisper() or not LevelOK(p.level) then return end
   if askedAt[p.full] and GetTime() - askedAt[p.full] < ASK_COOLDOWN then return end
+  if p.class == "PALADIN" and HasBlessingFrom(p.unit) then return end
   local text = BuildAsk(p.full, p.short, p.realm, p.class, p.fam)
   if not text then return end
   local send = (C_ChatInfo and C_ChatInfo.SendChatMessage) or SendChatMessage
@@ -778,10 +792,11 @@ local function MyBlessingWish()
 end
 
 -- What I would ask a player of this class for, or nil.
-local function RequestFamily(class)
+local function RequestFamily(class, unit)
   local what = ns.ASK_FOR[class]
   if not what then return nil end
   if what == "BLESSING" then
+    if HasBlessingFrom(unit) then return nil end
     for _, fam in ipairs(MyBlessingWish()) do
       if Lacking(fam) then return fam end
     end
@@ -886,7 +901,7 @@ function ns.RefreshReq(unit)
   end
   local _, class = UnitClass(unit)
   if not LevelOK(UnitLevel(unit)) then ns.ReleaseReq(unit); return end
-  local ok, fam = pcall(RequestFamily, class)
+  local ok, fam = pcall(RequestFamily, class, unit)
   if not ok or not fam then ns.ReleaseReq(unit); return end
   local full = FullName(unit)
   local asked = full and askedAt[full]
