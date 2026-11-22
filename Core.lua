@@ -100,6 +100,21 @@ local nameToFamily = {} -- localized name -> FAMILY
 
 local otherIdToFam, otherNameToFam = {}, {}
 
+local function RankLevel(id)
+  local lvl
+  if C_Spell and C_Spell.GetSpellLevelLearned then lvl = C_Spell.GetSpellLevelLearned(id)
+  elseif GetSpellLevelLearned then lvl = GetSpellLevelLearned(id) end
+  if not lvl or lvl <= 0 then lvl = ns.RANK_LEVELS[id] end
+  return lvl or 1
+end
+
+local function RankText(id)
+  local sub
+  if C_Spell and C_Spell.GetSpellSubtext then sub = C_Spell.GetSpellSubtext(id)
+  elseif GetSpellSubtext then sub = GetSpellSubtext(id) end
+  if sub and sub ~= "" then return sub end
+end
+
 local function BuildSpells()
   wipe(known); wipe(idToFamily); wipe(nameToFamily)
   wipe(otherIdToFam); wipe(otherNameToFam)
@@ -111,12 +126,14 @@ local function BuildSpells()
         if n then nameToFamily[n] = fam end
       end
     end
-    -- highest known rank by ID
+    -- known ranks, highest first; the first one is the default
     for _, id in ipairs(d.ids) do
       if IsKnown(id) then
         local n, icon = SpellInfo(id)
-        if n then known[fam] = { name = n, icon = icon, id = id } end
-        break
+        if n then
+          if not known[fam] then known[fam] = { name = n, icon = icon, id = id, ranks = {} } end
+          table.insert(known[fam].ranks, { id = id, level = RankLevel(id), sub = RankText(id) })
+        end
       end
     end
     -- fallback: look the spell up by its name (only returns spells you know)
@@ -132,6 +149,24 @@ local function BuildSpells()
     end
   end
 end
+
+-- Spell text for /cast: the highest rank the target may receive
+-- (rank learn level minus 10 must not exceed the target's level).
+local function CastName(fam, targetLevel)
+  local k = known[fam]
+  if not k then return end
+  local ranks = k.ranks
+  if not ranks or #ranks <= 1 or not targetLevel or targetLevel <= 0 then return k.name end
+  for i, r in ipairs(ranks) do
+    if r.level - 10 <= targetLevel then
+      if i == 1 or not r.sub then return k.name end
+      return k.name .. "(" .. r.sub .. ")"
+    end
+  end
+  local low = ranks[#ranks]
+  return low.sub and (k.name .. "(" .. low.sub .. ")") or k.name
+end
+ns.CastName = CastName
 
 local function CampFamily(id)
   return id and (db.campIDs[id] or ns.CAMP_IDS[id])
@@ -380,10 +415,10 @@ local function RefreshBuff(unit)
   if blocked then
     b:SetAttribute("macrotext", nil)
   elseif isTarget then
-    b:SetAttribute("macrotext", "/cast [@target,help,nodead] " .. k.name)
+    b:SetAttribute("macrotext", "/cast [@target,help,nodead] " .. CastName(fam, UnitLevel(unit)))
     clickable = true
   elseif db.oneClick and tarName then
-    b:SetAttribute("macrotext", "/tar " .. tarName .. "\n/cast [@target,help,nodead] " .. k.name .. "\n/targetlasttarget")
+    b:SetAttribute("macrotext", "/tar " .. tarName .. "\n/cast [@target,help,nodead] " .. CastName(fam, UnitLevel(unit)) .. "\n/targetlasttarget")
     clickable = true
   else
     b:SetAttribute("macrotext", nil)
@@ -482,7 +517,7 @@ local function UpdateSmart()
   if unit and db.enabled and not (db.pvpMode == "block" and WouldFlag(unit)) then
     local fam = Decide(unit)
     if fam and known[fam] then
-      text = "/cast [@" .. unit .. ",help,nodead] " .. known[fam].name
+      text = "/cast [@" .. unit .. ",help,nodead] " .. CastName(fam, UnitLevel(unit))
       sfam = fam
     end
   end
@@ -1021,7 +1056,13 @@ SlashCmdList.BUFFBARTER = function(msg)
   elseif cmd == "spells" then
     if not next(known) then Print(L.KNOWN_NONE) return end
     Print(L.KNOWN_HEADER)
-    for fam, k in pairs(known) do print(("   %s: %s"):format(fam, k.name)) end
+    for fam, k in pairs(known) do
+      local parts = {}
+      for _, r in ipairs(k.ranks or {}) do
+        parts[#parts + 1] = ("%s L%d"):format(r.sub or "?", r.level)
+      end
+      print(("   %s: %s  %s"):format(fam, k.name, table.concat(parts, ", ")))
+    end
   elseif cmd == "camp" then
     local fam, id = a and a:upper(), tonumber(b)
     if not fam or not ns.BUFFS[fam] or not id then Print(L.CAMP_BAD:format(FamilyList())) return end

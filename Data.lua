@@ -22,6 +22,29 @@ ns.BUFFS = {
   THORNS     = { class = "DRUID",  ids = { 9910, 9756, 8914, 1075, 782, 467 } },
 }
 
+-- Level at which each rank is learned (Classic values). A buff can only be
+-- cast on targets at most 10 levels below that, so low level players get a
+-- lower rank. Used when the client cannot tell the learn level itself.
+ns.RANK_LEVELS = {
+  -- Blessing of Might
+  [19740] = 4, [19834] = 12, [19835] = 22, [19836] = 32, [19837] = 42, [19838] = 52, [25291] = 60,
+  -- Blessing of Wisdom
+  [19742] = 14, [19850] = 24, [19852] = 34, [19853] = 44, [19854] = 54, [25290] = 60,
+  -- Blessing of Kings, Blessing of Light
+  [20217] = 20, [19977] = 40, [19978] = 50, [19979] = 60,
+  -- Power Word: Fortitude
+  [1243] = 1, [1244] = 12, [1245] = 24, [2791] = 36, [10937] = 48, [10938] = 60,
+  -- Divine Spirit, Shadow Protection
+  [14752] = 30, [14818] = 40, [14819] = 50, [27841] = 60,
+  [976] = 30, [10957] = 42, [10958] = 56,
+  -- Arcane Intellect
+  [1459] = 1, [1460] = 14, [1461] = 28, [10156] = 42, [10157] = 56,
+  -- Mark of the Wild
+  [1126] = 1, [5232] = 10, [6756] = 20, [5234] = 30, [8907] = 40, [9884] = 50, [9885] = 60,
+  -- Thorns
+  [467] = 6, [782] = 14, [1075] = 24, [8914] = 34, [9756] = 44, [9910] = 54,
+}
+
 -- Paladin subset (kept for the blessing specific code).
 ns.BLESSINGS = {}
 for fam, d in pairs(ns.BUFFS) do
