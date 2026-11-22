@@ -39,7 +39,7 @@ WoW Forever camps hand out weaker copies of class buffs that do not stack with t
 
 ### Ask for a buff back
 
-After you buff a priest, mage, druid or paladin, BuffBarter can whisper them and ask for their buff, but only if you do not have it yet.
+After you buff a priest, mage, druid or paladin, BuffBarter can whisper them and ask for their buff, but only if you do not have it yet and they are close to your level. Low level players still get your buffs, they just are not asked for their low rank ones.
 
 - Your own texts per class, in English and German
 - Buffs as clickable spell links, so everyone sees the right spell in their own language
@@ -47,7 +47,7 @@ After you buff a priest, mage, druid or paladin, BuffBarter can whisper them and
 
 ### One-click buff requests (every class)
 
-A small "ask" icon appears next to priests, mages, druids and paladins who can give you a buff you are missing. One click sends a friendly whisper. Great for warriors, rogues, hunters and everybody else.
+A small "ask" icon appears next to priests, mages, druids and paladins near your level who can give you a buff you are missing. One click sends a friendly whisper. Great for warriors, rogues, hunters and everybody else.
 
 ### Statistics
 
@@ -65,6 +65,7 @@ Type `/barter` or open *Options > AddOns > BuffBarter* to:
 
 - switch buff icons, one-click buffing, request icons and strangers on or off
 - choose how camp buffs and PvP flagged players are handled
+- choose how far below your level a player may be to still be asked for a buff (3, 5, 10, 15 levels or any)
 - write your own whisper texts (placeholders: `{name}`, `{buff}`, `{ask}`, `{me}`)
 - choose the language of your whispers
 
