@@ -1,0 +1,45 @@
+name: Release on version bump
+
+# Changing the VERSION file on main publishes that version:
+# the workflow creates the tag v<VERSION>, builds the zip and uploads it
+# to CurseForge. Versions containing "beta" or "alpha" go out as beta or
+# alpha files, everything else as a normal release.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - VERSION
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      CF_API_KEY: ${{ secrets.CF_API_KEY }}
+      GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create tag from VERSION
+        id: tag
+        run: |
+          v="v$(tr -d ' \n\r' < VERSION)"
+          if git rev-parse -q --verify "refs/tags/$v" >/dev/null; then
+            echo "Tag $v already exists, nothing to release."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$v" -m "BuffBarter $v"
+          git push origin "$v"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Package and upload to CurseForge
+        if: steps.tag.outputs.skip == 'false'
+        uses: BigWigsMods/packager@v2

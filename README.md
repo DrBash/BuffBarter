@@ -96,3 +96,7 @@ English and German. Translations are welcome.
 ## Feedback
 
 Found a bug or have an idea? Leave a comment.
+
+## Releasing
+
+Change the version in `VERSION` and push to `main`. GitHub creates the tag, builds the zip and uploads it to CurseForge. Versions with `beta` or `alpha` in the name are uploaded as beta or alpha files.

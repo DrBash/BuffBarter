@@ -3,3 +3,4 @@ package-as: BuffBarter
 ignore:
   - README.md
   - art
+  - VERSION
