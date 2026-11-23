@@ -133,6 +133,7 @@ ns.DEFAULT_TEMPLATES = {
     PALADIN = "Hi {name}, I gave you {buff}. Could you give me {ask} in return? Thanks!",
     OTHER   = "",
     REQUEST = "Hi {name}, could you give me {ask}, please? Thanks!",
+    THANKS  = "Thanks for the {buff}, {name}!",
   },
   de = {
     PRIEST  = "Hi {name}, ich hab dir {buff} gegeben. Magst du mir {ask} geben? Danke!",
@@ -141,5 +142,33 @@ ns.DEFAULT_TEMPLATES = {
     PALADIN = "Hi {name}, ich hab dir {buff} gegeben. Gibst du mir im Gegenzug {ask}? Danke!",
     OTHER   = "",
     REQUEST = "Hi {name}, könntest du mir bitte {ask} geben? Danke!",
+    THANKS  = "Danke für {buff}, {name}!",
+  },
+}
+
+------------------------------------------------------------------------
+-- Dispels (out of combat). Per class, best spell first; ids highest rank first.
+------------------------------------------------------------------------
+ns.DISPELS = {
+  PALADIN = {
+    { ids = { 4987 }, types = { Magic = true, Poison = true, Disease = true } }, -- Cleanse
+    { ids = { 1152 }, types = { Poison = true, Disease = true } },               -- Purify
+  },
+  PRIEST = {
+    { ids = { 988, 527 }, types = { Magic = true } },   -- Dispel Magic
+    { ids = { 552 },      types = { Disease = true } }, -- Abolish Disease
+    { ids = { 528 },      types = { Disease = true } }, -- Cure Disease
+  },
+  DRUID = {
+    { ids = { 2782 }, types = { Curse = true } },  -- Remove Curse
+    { ids = { 2893 }, types = { Poison = true } }, -- Abolish Poison
+    { ids = { 8946 }, types = { Poison = true } }, -- Cure Poison
+  },
+  MAGE = {
+    { ids = { 475 }, types = { Curse = true } },   -- Remove Lesser Curse
+  },
+  SHAMAN = {
+    { ids = { 526 },  types = { Poison = true } },  -- Cure Poison
+    { ids = { 2870 }, types = { Disease = true } }, -- Cure Disease
   },
 }

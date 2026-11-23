@@ -17,18 +17,89 @@ local DEFAULTS = {
   bindKey = nil,             -- key for the smart button (mouseover, else target)
   debug = false,
   -- asking for a buff back
-  askBack = true,            -- whisper after buffing someone
+  askBack = false,           -- whisper after buffing someone (opt in)
   askOnlyIfMissing = true,   -- only ask for buffs you do not have
   askCampCounts = false,     -- your own camp buff counts as having it
   myLang = (GetLocale() == "deDE") and "de" or "en", -- default whisper language
   useLinks = true,
   oneClick = true,
-  askMaxBelow = 5,           -- only ask players at most this many levels below you           -- icon click targets the player by name, casts, retargets
+  askMaxBelow = 5,
+  askRemainMin = 15,         -- a buff with less time left counts as missing for asking
+  showQueue = true,          -- stationary buff list
+  queueLocked = false,
+  queueCollapsed = false,    -- list folded down to its title bar
+  queuePos = nil,
+  nextKey = nil,
+  plateIcons = true,         -- icons on nameplates (off: only the buff list)
+  dispel = true,
+  thank = true,              -- thank players who buff you
+  msgToGroup = false,        -- automatic whispers (thanks, ask back) also to group members
+  thankMode = "whisper",     -- "whisper" (own text) or "emote" (/thank)
+  offInDungeon = false,      -- switch BuffBarter off in 5-player instances
+  offInRaid = false,
+  offInPvP = false,          -- battlegrounds and arenas
+  offInCities = true,        -- capital cities are too crowded             -- show diseases, poisons, curses, magic you can remove
+  minimap = true,            -- minimap icon
+  minimapAngle = 210,             -- key that buffs the first player of the list           -- only ask players at most this many levels below you           -- icon click targets the player by name, casts, retargets
   pvpMode = "warn",          -- PvP flagged targets: "warn" or "block"           -- {buff} and {ask} as clickable spell links
   playerLang = {},           -- ["First-Last"] = "de"|"en", via /barter lang
   templates = {},            -- [lang][CLASS] = text, overrides defaults
 }
 local db
+
+-- Capital cities: map IDs (Classic and modern client) plus zone names as a
+-- fallback in case Forever uses its own map IDs.
+local CITY_MAPS = {
+  [1453] = true, [1454] = true, [1455] = true, [1456] = true, [1457] = true, [1458] = true,
+  [84] = true, [85] = true, [87] = true, [88] = true, [89] = true, [90] = true,
+}
+local CITY_NAMES = {
+  ["Stormwind City"] = true, ["Sturmwind"] = true, ["Ironforge"] = true, ["Eisenschmiede"] = true,
+  ["Darnassus"] = true, ["Orgrimmar"] = true, ["Thunder Bluff"] = true, ["Donnerfels"] = true,
+  ["Undercity"] = true, ["Unterstadt"] = true,
+}
+local function InCity()
+  local mapID = C_Map and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
+  if mapID and CITY_MAPS[mapID] then return true end
+  local zone = GetRealZoneText and GetRealZoneText()
+  return zone and CITY_NAMES[zone] or false
+end
+ns.InCity = InCity
+
+-- City mode: no icons above heads, list folded until you unfold it.
+local cityFolded = true      -- per visit; reset when you enter a city
+local cityIcons = false      -- icons above heads switched on for this visit
+local cityAsk = false        -- "ask" icons switched on for this visit
+local wasInCity = false
+local function CityMode()
+  return db and db.offInCities and InCity() or false
+end
+local function CheckCityChange()
+  local now = CityMode()
+  if now and not wasInCity then cityFolded, cityIcons, cityAsk = true, false, false end
+  wasInCity = now
+end
+-- Effective switches: in a city the per-visit choice counts.
+local function IconsOn()
+  if CityMode() then return cityIcons end
+  return db.plateIcons
+end
+local function AskOn()
+  if CityMode() then return cityAsk end
+  return db.showRequest
+end
+
+-- Is BuffBarter switched on here? (master switch plus per-zone options)
+local function Active()
+  if not db or not db.enabled then return false end
+
+  local inInstance, kind = IsInInstance()
+  if not inInstance then return true end
+  if kind == "party" and db.offInDungeon then return false end
+  if kind == "raid" and db.offInRaid then return false end
+  if (kind == "pvp" or kind == "arena") and db.offInPvP then return false end
+  return true
+end
 
 local function InitDB()
   BuffBarterDB = BuffBarterDB or {}
@@ -42,6 +113,8 @@ local function InitDB()
     local _, myClass = UnitClass("player")
     db.showRequest = (myClass ~= "PALADIN") -- non-buffers ask others by default
   end
+  if db.thankMode == "emote" and not db.thankModeChosen then db.thankMode = "whisper" end
+  if not db.askBackChosen then db.askBack = false end
   if (db.schema or 1) < 2 then db.debug = false; db.offset = 0; db.schema = 2 end
 end
 
@@ -115,7 +188,24 @@ local function RankText(id)
   if sub and sub ~= "" then return sub end
 end
 
+local dispels = {}   -- my removal spells: { name, icon, types }
+
+local function BuildDispels()
+  wipe(dispels)
+  local _, myClass = UnitClass("player")
+  for _, d in ipairs(ns.DISPELS[myClass] or {}) do
+    for _, id in ipairs(d.ids) do
+      if IsKnown(id) then
+        local n, icon = SpellInfo(id)
+        if n then dispels[#dispels + 1] = { name = n, icon = icon, types = d.types } end
+        break
+      end
+    end
+  end
+end
+
 local function BuildSpells()
+  BuildDispels()
   wipe(known); wipe(idToFamily); wipe(nameToFamily)
   wipe(otherIdToFam); wipe(otherNameToFam)
   for fam, d in pairs(ns.BUFFS) do
@@ -167,6 +257,41 @@ local function CastName(fam, targetLevel)
   return low.sub and (k.name .. "(" .. low.sub .. ")") or k.name
 end
 ns.CastName = CastName
+
+-- First debuff on the unit that one of my spells removes.
+-- Returns { spell, debuff, debuffIcon, dtype } or nil.
+local function FindDispel(unit)
+  if not db.dispel or #dispels == 0 then return end
+  local found
+  pcall(function()
+    for i = 1, 40 do
+      local name, icon, dtype
+      if C_UnitAuras and C_UnitAuras.GetAuraDataByIndex then
+        local a = C_UnitAuras.GetAuraDataByIndex(unit, i, "HARMFUL")
+        if not a then break end
+        name, icon, dtype = a.name, a.icon, a.dispelName
+      else
+        name, icon, _, dtype = UnitAura(unit, i, "HARMFUL")
+        if not name then break end
+      end
+      if dtype and dtype ~= "" then
+        for _, d in ipairs(dispels) do
+          if d.types[dtype] then
+            found = { spell = d.name, debuff = name, debuffIcon = icon, dtype = dtype }
+            return
+          end
+        end
+      end
+    end
+  end)
+  return found
+end
+
+local function DispelColor(dtype)
+  local c = DebuffTypeColor and DebuffTypeColor[dtype]
+  if c then return c.r, c.g, c.b end
+  return 0.6, 0.2, 1
+end
 
 local function CampFamily(id)
   return id and (db.campIDs[id] or ns.CAMP_IDS[id])
@@ -273,6 +398,29 @@ RegisterStateDriver(holder, "visibility", "[combat] hide; show")
 local pool, active = {}, {}   -- active[unitToken] = button
 local pendingRebuild = false
 
+-- PvP flagged players need an explicit second click: the first click only
+-- unlocks the button for a few seconds.
+local armed = {}       -- ["First Last"] = time until which a click casts
+local ARM_TIME = 6
+local function ArmKey(unit)
+  local first, last = UnitName(unit)
+  if not first then return end
+  return (last and last ~= "") and (first .. " " .. last) or first
+end
+local function IsArmed(unit)
+  local k = ArmKey(unit)
+  return k and armed[k] and armed[k] > GetTime() or false
+end
+local function Arm(unit)
+  local k = ArmKey(unit)
+  if k then armed[k] = GetTime() + ARM_TIME end
+  Print("|cffff4040" .. L.PVP_ARMED:format(k or "?", ARM_TIME) .. "|r")
+end
+-- The click edge (down or up) on which secure buttons actually cast.
+local function ActionEdge(down)
+  return (down and true or false) == (GetCVarBool("ActionButtonUseKeyDown") and true or false)
+end
+
 local STATE_COLOR = {
   MISSING  = { 0, 0, 0 },
   CAMP     = { 1, 0.5, 0 },
@@ -281,6 +429,15 @@ local STATE_COLOR = {
 }
 
 local function OnEnter(self)
+  if self.disp then
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:AddLine(self.disp.debuff or "?", DispelColor(self.disp.dtype))
+    GameTooltip:AddLine(UnitName(self.unit) or "?", 1, 1, 1)
+    GameTooltip:AddLine(L.STATE_DISPEL:format(self.disp.spell), 0.5, 1, 0.5)
+    if self.pvpFlag then GameTooltip:AddLine(L.PVP_WARN, 1, 0.25, 0.25, true) end
+    GameTooltip:Show()
+    return
+  end
   if not self.fam or not known[self.fam] then return end
   GameTooltip:SetOwner(self, "ANCHOR_TOP")
   GameTooltip:AddLine(known[self.fam].name)
@@ -298,8 +455,8 @@ local function OnEnter(self)
   if self.pvpBlocked then
     GameTooltip:AddLine(L.PVP_BLOCKED, 1, 0.25, 0.25, true)
   else
-    if self.pvpFlag then GameTooltip:AddLine(L.PVP_WARN, 1, 0.25, 0.25, true) end
-    GameTooltip:AddLine(L.CLICK_TO_CAST, 0.5, 1, 0.5)
+    if self.pvpFlag then GameTooltip:AddLine(self.needsArm and L.PVP_ARM_TIP or L.PVP_WARN, 1, 0.25, 0.25, true) end
+    if not self.needsArm then GameTooltip:AddLine(L.CLICK_TO_CAST, 0.5, 1, 0.5) end
   end
   GameTooltip:Show()
 end
@@ -335,11 +492,19 @@ local function NewButton()
   b.pvp:Hide()
 
   b:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
+  b:SetHitRectInsets(-10, -10, -10, -10) -- easier to hit on moving players
   b:SetScript("OnEnter", OnEnter)
   b:SetScript("OnLeave", GameTooltip_Hide)
   b:HookScript("PostClick", function(self, mouse, down)
-    if ns.Remember and self.clickable and self.unit then ns.Remember(self.unit, self.fam) end
-    if down and self.clickable and self.pvpFlag then
+    if not ActionEdge(down) or not self.unit then return end
+    if self.needsArm then
+      Arm(self.unit)
+      if ns.RefreshUnit then ns.RefreshUnit(self.unit) end
+      if ns.UpdateQueue then ns.UpdateQueue() end
+      return
+    end
+    if ns.Remember and self.clickable then ns.Remember(self.unit, self.fam) end
+    if self.clickable and self.pvpFlag then
       Print("|cffff4040" .. L.PVP_CHAT:format(UnitName(self.unit) or "?") .. "|r")
     end
   end)
@@ -386,12 +551,18 @@ local function RefreshBuff(unit)
   if not unit or not unit:match("^nameplate%d+$") then return end
 
   local plate = C_NamePlate.GetNamePlateForUnit(unit)
-  if not db.enabled or not plate or (plate.IsForbidden and plate:IsForbidden()) or not Eligible(unit) then
+  if not Active() or not plate or (plate.IsForbidden and plate:IsForbidden()) or not Eligible(unit) then
     Release(unit); return
   end
 
-  local fam, state, myFam, myLeft = Decide(unit)
-  if not fam then Release(unit); return end
+  local disp = FindDispel(unit)
+  local fam, state, myFam, myLeft
+  if disp then
+    state = "DISPEL"
+  else
+    fam, state, myFam, myLeft = Decide(unit)
+    if not fam then Release(unit); return end
+  end
 
   local b = active[unit]
   if not b then
@@ -401,7 +572,8 @@ local function RefreshBuff(unit)
     b:SetPoint("CENTER", plate, "CENTER", 0, db.offset)
   end
 
-  local k = known[fam]
+  local spell = disp and disp.spell or CastName(fam, UnitLevel(unit))
+  local spellName = disp and disp.spell or known[fam].name
   local isTarget = UnitExists("target") and UnitIsUnit("target", unit)
   local pvpFlag = WouldFlag(unit)
   local blocked = pvpFlag and db.pvpMode == "block"
@@ -412,13 +584,18 @@ local function RefreshBuff(unit)
   local first, last = UnitName(unit)
   local tarName = first and ((last and last ~= "") and (first .. " " .. last) or first)
   local clickable = false
+  local needsArm = pvpFlag and not blocked and not IsArmed(unit)
+  b.needsArm = needsArm
   if blocked then
     b:SetAttribute("macrotext", nil)
+  elseif needsArm then
+    b:SetAttribute("macrotext", nil) -- first click only unlocks
+    clickable = true
   elseif isTarget then
-    b:SetAttribute("macrotext", "/cast [@target,help,nodead] " .. CastName(fam, UnitLevel(unit)))
+    b:SetAttribute("macrotext", "/cast [@target,help,nodead] " .. spell)
     clickable = true
   elseif db.oneClick and tarName then
-    b:SetAttribute("macrotext", "/tar " .. tarName .. "\n/cast [@target,help,nodead] " .. CastName(fam, UnitLevel(unit)) .. "\n/targetlasttarget")
+    b:SetAttribute("macrotext", "/tar " .. tarName .. "\n/cast [@target,help,nodead] " .. spell .. "\n/targetlasttarget")
     clickable = true
   else
     b:SetAttribute("macrotext", nil)
@@ -426,13 +603,16 @@ local function RefreshBuff(unit)
   b:EnableMouse(clickable)
   b.clickable = clickable
   b.isTarget = isTarget
-  b.unit, b.fam, b.state, b.myFam = unit, fam, state, myFam
-  b.icon:SetTexture(k.icon)
-  local c = pvpFlag and { 1, 0.1, 0.1 } or STATE_COLOR[state]
+  b.unit, b.fam, b.state, b.myFam, b.myLeft = unit, fam, state, myFam, myLeft
+  b.disp = disp
+  b.icon:SetTexture(disp and disp.debuffIcon or known[fam].icon)
+  local c = pvpFlag and { 1, 0.1, 0.1 } or (disp and { DispelColor(disp.dtype) }) or STATE_COLOR[state]
   b.border:SetColorTexture(c[1], c[2], c[3], 0.9)
 
   if pvpFlag then
-    b.label:SetText(L.PVP_LABEL); b.label:SetTextColor(1, 0.25, 0.25)
+    b.label:SetText(needsArm and L.PVP_LABEL or L.PVP_CONFIRM); b.label:SetTextColor(1, 0.25, 0.25)
+  elseif disp then
+    b.label:SetText(L["DISPEL_" .. disp.dtype] or disp.dtype); b.label:SetTextColor(DispelColor(disp.dtype))
   elseif state == "CAMP" then
     b.label:SetText(L.CAMP); b.label:SetTextColor(1, 0.5, 0)
   elseif state == "EXPIRING" then
@@ -443,8 +623,15 @@ local function RefreshBuff(unit)
     b.label:SetText("")
   end
 
-  b:SetAlpha(InRange(k.name, unit) and (clickable and 1 or 0.6) or 0.3)
-  b:Show()
+  b:SetAlpha(InRange(spellName, unit) and (clickable and 1 or 0.6) or 0.3)
+  -- With nameplate icons switched off the button stays invisible but keeps
+  -- its data, which feeds the buff list.
+  if IconsOn() then
+    b:Show()
+  else
+    b:EnableMouse(false)
+    b:Hide()
+  end
 end
 
 -- Blessing icon plus request icon (the latter is defined further down).
@@ -452,6 +639,8 @@ local function Refresh(unit)
   RefreshBuff(unit)
   if ns.RefreshReq then ns.RefreshReq(unit) end
 end
+
+ns.RefreshUnit = Refresh
 
 local function ReleaseBoth(unit)
   Release(unit)
@@ -467,7 +656,7 @@ local function RebuildAll()
   pendingRebuild = false
   for unit in pairs(active) do Release(unit) end
   if ns.ReleaseAllReq then ns.ReleaseAllReq() end
-  if not db.enabled then return end
+  if not Active() then return end
   for _, plate in ipairs(C_NamePlate.GetNamePlates() or {}) do
     local unit = PlateUnit(plate)
     if unit then Refresh(unit) end
@@ -514,9 +703,12 @@ local function UpdateSmart()
   if not db or InCombatLockdown() then return end
   local unit = (SmartEligible("mouseover") and "mouseover") or (SmartEligible("target") and "target") or nil
   local text, sfam
-  if unit and db.enabled and not (db.pvpMode == "block" and WouldFlag(unit)) then
-    local fam = Decide(unit)
-    if fam and known[fam] then
+  if unit and Active() and not (db.pvpMode == "block" and WouldFlag(unit)) then
+    local disp = FindDispel(unit)
+    local fam = not disp and Decide(unit)
+    if disp then
+      text = "/cast [@" .. unit .. ",help,nodead] " .. disp.spell
+    elseif fam and known[fam] then
       text = "/cast [@" .. unit .. ",help,nodead] " .. CastName(fam, UnitLevel(unit))
       sfam = fam
     end
@@ -527,6 +719,295 @@ local function UpdateSmart()
   smart:SetAttribute("macrotext", text)
   smart.unit = unit
 end
+
+------------------------------------------------------------------------
+-- Buff list: a fixed panel with everybody nearby who needs a buff.
+-- Rows do not move like nameplates do, and the "next" key buffs row one.
+------------------------------------------------------------------------
+local QUEUE_ROWS = 8
+local ROW_H = 24
+local STATE_ORDER = { DISPEL = 0, MISSING = 1, CAMP = 2, EXPIRING = 3, SWAP = 4 }
+
+local queueHolder = CreateFrame("Frame", "BuffBarterQueueHolder", UIParent, "SecureHandlerStateTemplate")
+queueHolder:SetAllPoints(UIParent)
+RegisterStateDriver(queueHolder, "visibility", "[combat] hide; show")
+
+local queue = CreateFrame("Frame", "BuffBarterQueue", queueHolder)
+queue:SetSize(210, 44)
+queue:SetPoint("LEFT", UIParent, "LEFT", 40, 80)
+queue:SetClampedToScreen(true)
+queue:SetMovable(true)
+queue:EnableMouse(true)
+queue:RegisterForDrag("LeftButton")
+queue:SetScript("OnDragStart", function(self)
+  if not db.queueLocked and not InCombatLockdown() then self:StartMoving() end
+end)
+queue:SetScript("OnDragStop", function(self)
+  self:StopMovingOrSizing()
+  local p, _, rp, x, y = self:GetPoint()
+  db.queuePos = { p, rp, x, y }
+end)
+queue.bg = queue:CreateTexture(nil, "BACKGROUND")
+queue.bg:SetAllPoints()
+queue.bg:SetColorTexture(0.05, 0.07, 0.1, 0.75)
+queue.edge = queue:CreateTexture(nil, "BORDER")
+queue.edge:SetPoint("TOPLEFT"); queue.edge:SetPoint("TOPRIGHT"); queue.edge:SetHeight(2)
+queue.edge:SetColorTexture(0.95, 0.75, 0.25, 0.9)
+queue.title = queue:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+queue.title:SetPoint("TOPLEFT", 8, -6)
+queue.title:SetText("BuffBarter")
+queue.toggle = CreateFrame("Button", nil, queue)
+queue.toggle:SetSize(16, 16)
+queue.toggle:SetPoint("TOPRIGHT", -4, -2)
+queue.toggle:SetScript("OnClick", function()
+  if InCombatLockdown() then return end
+  if CityMode() then cityFolded = not cityFolded else db.queueCollapsed = not db.queueCollapsed end
+  if ns.UpdateQueue then ns.UpdateQueue() end
+end)
+queue.toggle:SetScript("OnEnter", function(self)
+  GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+  local folded = CityMode() and cityFolded or (not CityMode() and db.queueCollapsed)
+  GameTooltip:AddLine(folded and L.QUEUE_EXPAND or L.QUEUE_COLLAPSE)
+  if CityMode() then GameTooltip:AddLine(L.QUEUE_CITY, 0.7, 0.7, 0.7, true) end
+  GameTooltip:Show()
+end)
+queue.toggle:SetScript("OnLeave", GameTooltip_Hide)
+-- eye button: icons above players on/off
+queue.eye = CreateFrame("Button", nil, queue)
+queue.eye:SetSize(16, 16)
+queue.eye:SetPoint("RIGHT", queue.toggle, "LEFT", -4, 0)
+queue.eye.tex = queue.eye:CreateTexture(nil, "ARTWORK")
+queue.eye.tex:SetAllPoints()
+queue.eye.tex:SetTexture("Interface\\Icons\\INV_Misc_Eye_01")
+queue.eye.tex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+queue.eye:SetScript("OnClick", function()
+  if InCombatLockdown() then return end
+  if CityMode() then cityIcons = not cityIcons else db.plateIcons = not db.plateIcons end
+  RebuildAll()
+  if ns.UpdateQueue then ns.UpdateQueue() end
+end)
+queue.eye:SetScript("OnEnter", function(self)
+  GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+  GameTooltip:AddLine(IconsOn() and L.EYE_HIDE or L.EYE_SHOW)
+  if CityMode() then GameTooltip:AddLine(L.CITY_VISIT, 0.7, 0.7, 0.7, true) end
+  GameTooltip:Show()
+end)
+queue.eye:SetScript("OnLeave", GameTooltip_Hide)
+-- speech bubble button: request ("ask") icons on/off
+queue.ask = CreateFrame("Button", nil, queue)
+queue.ask:SetSize(16, 16)
+queue.ask:SetPoint("RIGHT", queue.eye, "LEFT", -4, 0)
+queue.ask.tex = queue.ask:CreateTexture(nil, "ARTWORK")
+queue.ask.tex:SetAllPoints()
+queue.ask.tex:SetTexture("Interface\\ChatFrame\\UI-ChatIcon-Chat-Up")
+queue.ask:SetScript("OnClick", function()
+  if InCombatLockdown() then return end
+  if CityMode() then cityAsk = not cityAsk else db.showRequest = not db.showRequest end
+  RebuildAll()
+  if ns.UpdateQueue then ns.UpdateQueue() end
+end)
+queue.ask:SetScript("OnEnter", function(self)
+  GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+  GameTooltip:AddLine(AskOn() and L.ASK_HIDE or L.ASK_SHOW)
+  if CityMode() then GameTooltip:AddLine(L.CITY_VISIT, 0.7, 0.7, 0.7, true) end
+  GameTooltip:Show()
+end)
+queue.ask:SetScript("OnLeave", GameTooltip_Hide)
+queue.empty = queue:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+queue.empty:SetPoint("TOPLEFT", 8, -24)
+queue.rows = {}
+
+local function ClassRGB(class)
+  local col = class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]
+  if col then return col.r, col.g, col.b end
+  return 0.9, 0.9, 0.9
+end
+
+local function RowOnEnter(self)
+  if self.unit and self.disp then
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    GameTooltip:AddLine(self.disp.debuff or "?", DispelColor(self.disp.dtype))
+    GameTooltip:AddLine(self.unit == "player" and L.QUEUE_YOU or (UnitName(self.unit) or "?"), 1, 1, 1)
+    GameTooltip:AddLine(L.STATE_DISPEL:format(self.disp.spell), 0.5, 1, 0.5)
+    GameTooltip:Show()
+    return
+  end
+  if not self.unit or not self.fam or not known[self.fam] then return end
+  GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+  GameTooltip:AddLine(CastName(self.fam, UnitLevel(self.unit)) or known[self.fam].name)
+  GameTooltip:AddLine(self.unit == "player" and L.QUEUE_YOU or (UnitName(self.unit) or "?"), 1, 1, 1)
+  if self.pvpFlag then GameTooltip:AddLine(self.needsArm and L.PVP_ARM_TIP or L.PVP_WARN, 1, 0.25, 0.25, true) end
+  if not self.needsArm then GameTooltip:AddLine(L.CLICK_TO_CAST, 0.5, 1, 0.5) end
+  GameTooltip:Show()
+end
+
+for i = 1, QUEUE_ROWS do
+  local r = CreateFrame("Button", "BuffBarterQueueRow" .. i, queue, "SecureActionButtonTemplate")
+  r:RegisterForClicks("AnyUp", "AnyDown")
+  r:SetAttribute("type", "macro")
+  r:SetSize(196, ROW_H - 2)
+  r:SetPoint("TOPLEFT", 7, -20 - (i - 1) * ROW_H)
+  r.bg = r:CreateTexture(nil, "BACKGROUND")
+  r.bg:SetAllPoints()
+  r.bg:SetColorTexture(1, 1, 1, (i % 2 == 0) and 0.05 or 0.02)
+  r.icon = r:CreateTexture(nil, "ARTWORK")
+  r.icon:SetSize(20, 20)
+  r.icon:SetPoint("LEFT", 1, 0)
+  r.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+  r.name = r:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  r.name:SetPoint("LEFT", r.icon, "RIGHT", 6, 0)
+  r.name:SetWidth(122)
+  r.name:SetJustifyH("LEFT")
+  r.name:SetWordWrap(false)
+  r.tag = r:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  r.tag:SetPoint("RIGHT", -4, 0)
+  r:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
+  r:SetScript("OnEnter", RowOnEnter)
+  r:SetScript("OnLeave", GameTooltip_Hide)
+  r:HookScript("PostClick", function(self, mouse, down)
+    if not ActionEdge(down) or not self.unit then return end
+    if self.needsArm then
+      Arm(self.unit)
+      if ns.UpdateQueue then ns.UpdateQueue() end
+      if ns.RefreshUnit then ns.RefreshUnit(self.unit) end
+      return
+    end
+    if ns.Remember and self.unit ~= "player" and self.fam then ns.Remember(self.unit, self.fam) end
+  end)
+  r:Hide()
+  queue.rows[i] = r
+end
+
+-- invisible button behind the "next" key
+local nextBtn = CreateFrame("Button", "BuffBarterNextButton", UIParent, "SecureActionButtonTemplate")
+nextBtn:RegisterForClicks("AnyUp", "AnyDown")
+nextBtn:SetSize(1, 1)
+nextBtn:SetPoint("TOPLEFT", UIParent, "TOPLEFT", -10, 10)
+nextBtn:SetAlpha(0)
+nextBtn:EnableMouse(false)
+nextBtn:SetAttribute("type", "macro")
+nextBtn:HookScript("PostClick", function(self)
+  if ns.Remember and self.unit and self.unit ~= "player" and self.fam then ns.Remember(self.unit, self.fam) end
+end)
+
+local function QueueMacro(unit, fam, spellOverride)
+  local spell = spellOverride or CastName(fam, UnitLevel(unit))
+  if not spell then return end
+  if unit == "player" then return "/cast [@player] " .. spell end
+  local first, last = UnitName(unit)
+  if not first then return end
+  local tar = (last and last ~= "") and (first .. " " .. last) or first
+  return "/tar " .. tar .. "\n/cast [@target,help,nodead] " .. spell .. "\n/targetlasttarget"
+end
+
+local function RestoreQueuePosition()
+  if InCombatLockdown() or not db.queuePos then return end
+  local p = db.queuePos
+  queue:ClearAllPoints()
+  queue:SetPoint(p[1], UIParent, p[2], p[3], p[4])
+end
+
+local function UpdateQueue()
+  if not db or InCombatLockdown() then return end
+  if not Active() or not db.showQueue then
+    queue:Hide()
+    nextBtn:SetAttribute("macrotext", nil)
+    return
+  end
+  local list = {}
+  -- yourself first (you have no nameplate)
+  local selfDisp = FindDispel("player")
+  local ok, fam, state, _, left = pcall(Decide, "player")
+  if selfDisp then
+    list[#list + 1] = { unit = "player", disp = selfDisp, state = "DISPEL", inRange = true, me = true }
+  elseif ok and fam and known[fam] then
+    list[#list + 1] = { unit = "player", fam = fam, state = state, left = left, inRange = true, me = true }
+  end
+  for unit, b in pairs(active) do
+    if b.disp and UnitExists(unit) then
+      list[#list + 1] = { unit = unit, disp = b.disp, state = "DISPEL",
+                          inRange = InRange(b.disp.spell, unit), pvp = b.pvpFlag }
+    elseif b.fam and known[b.fam] and UnitExists(unit) then
+      list[#list + 1] = { unit = unit, fam = b.fam, state = b.state, left = b.myLeft,
+                          inRange = InRange(known[b.fam].name, unit), pvp = b.pvpFlag }
+    end
+  end
+  table.sort(list, function(x, y)
+    if (x.me and 1 or 0) ~= (y.me and 1 or 0) then return x.me and true or false end
+    if (x.inRange and 1 or 0) ~= (y.inRange and 1 or 0) then return x.inRange and true or false end
+    return (STATE_ORDER[x.state] or 9) < (STATE_ORDER[y.state] or 9)
+  end)
+
+  local nextSet = false
+  for i = 1, QUEUE_ROWS do
+    local r, e = queue.rows[i], list[i]
+    local text = e and QueueMacro(e.unit, e.fam, e.disp and e.disp.spell)
+    if e and text then
+      local _, class = UnitClass(e.unit)
+      local needsArm = e.pvp and not IsArmed(e.unit)
+      r:SetAttribute("macrotext", (not needsArm) and text or nil)
+      r.needsArm = needsArm
+      r.bg:SetColorTexture(e.pvp and 0.6 or 1, e.pvp and 0.05 or 1, e.pvp and 0.05 or 1,
+        e.pvp and 0.25 or ((i % 2 == 0) and 0.05 or 0.02))
+      r.unit, r.fam, r.pvpFlag, r.disp = e.unit, e.fam, e.pvp, e.disp
+      r.icon:SetTexture(e.disp and e.disp.debuffIcon or known[e.fam].icon)
+      r.name:SetText((e.me and L.QUEUE_YOU or (UnitName(e.unit) or "?")) .. "  |cff8a8a8a" .. (UnitLevel(e.unit) or "") .. "|r")
+      r.name:SetTextColor(ClassRGB(class))
+      if e.pvp then
+        r.tag:SetText(needsArm and L.PVP_ARM or L.PVP_CONFIRM)
+        r.tag:SetTextColor(1, needsArm and 0.25 or 0.8, 0.25)
+      elseif e.disp then
+        r.tag:SetText(L["DISPEL_" .. e.disp.dtype] or e.disp.dtype); r.tag:SetTextColor(DispelColor(e.disp.dtype))
+      elseif e.state == "CAMP" then
+        r.tag:SetText(L.CAMP); r.tag:SetTextColor(1, 0.5, 0)
+      elseif e.state == "EXPIRING" and e.left then
+        r.tag:SetText(("%dm"):format(math.max(0, math.floor(e.left / 60)))); r.tag:SetTextColor(1, 0.85, 0)
+      elseif e.state == "SWAP" then
+        r.tag:SetText(L.SWAP); r.tag:SetTextColor(0.7, 0.3, 1)
+      else
+        r.tag:SetText("")
+      end
+      r:SetAlpha(e.inRange and 1 or 0.4)
+      r:Show()
+      if not nextSet and e.inRange and not e.pvp then
+        nextBtn:SetAttribute("macrotext", text)
+        nextBtn.unit, nextBtn.fam = e.unit, (not e.disp) and e.fam or nil
+        nextSet = true
+      end
+    else
+      r:Hide()
+      r:SetAttribute("macrotext", nil)
+      r.unit, r.fam, r.disp = nil, nil, nil
+    end
+  end
+  if not nextSet then
+    nextBtn:SetAttribute("macrotext", nil)
+    nextBtn.unit, nextBtn.fam = nil, nil
+  end
+
+  local n = math.min(#list, QUEUE_ROWS)
+  CheckCityChange()
+  local city = CityMode()
+  local folded = (city and cityFolded) or (not city and db.queueCollapsed)
+  queue.title:SetText((#list > 0 and ("BuffBarter  |cffffffff" .. #list .. "|r") or "BuffBarter")
+    .. (city and ("  |cff8a8a8a" .. L.QUEUE_CITY_TAG .. "|r") or ""))
+  local tex = folded and "Interface\\Buttons\\UI-PlusButton-Up" or "Interface\\Buttons\\UI-MinusButton-Up"
+  queue.toggle:SetNormalTexture(tex)
+  queue.eye.tex:SetDesaturated(not IconsOn())
+  queue.eye:SetAlpha(IconsOn() and 1 or 0.5)
+  queue.ask.tex:SetDesaturated(not AskOn())
+  queue.ask:SetAlpha(AskOn() and 1 or 0.5)
+  if folded then
+    for i = 1, QUEUE_ROWS do queue.rows[i]:Hide() end -- the next key keeps working
+    queue.empty:SetText("")
+    queue:SetHeight(20)
+  else
+    queue.empty:SetText(n == 0 and L.QUEUE_EMPTY or "")
+    queue:SetHeight(26 + math.max(n, 1) * ROW_H)
+  end
+  queue:Show()
+end
+ns.UpdateQueue = UpdateQueue
 
 ------------------------------------------------------------------------
 -- Asking for a buff back
@@ -542,14 +1023,20 @@ local function FullName(unit)
 end
 
 -- "class", "camp" or nil: do I have this buff family myself?
+-- "class" or "camp" (or nil) plus the longest time left of the class version.
 local function PlayerHas(fam)
-  local res
+  local res, left
+  local now = GetTime()
   pcall(ForEachBuff, "player", function(name, id, src, exp)
     local f = (id and (otherIdToFam[id] or idToFamily[id])) or (name and (otherNameToFam[name] or nameToFamily[name]))
-    if f == fam then res = "class" end
+    if f == fam then
+      res = "class"
+      local l = (exp and exp > 0) and (exp - now) or 3600
+      left = math.max(left or 0, l)
+    end
     if not res and CampFamily(id) == fam then res = "camp" end
   end)
-  return res
+  return res, left
 end
 
 -- Did this player already give me a blessing? (One blessing per paladin:
@@ -559,14 +1046,18 @@ local function HasBlessingFrom(unit)
   local found = false
   pcall(ForEachBuff, "player", function(name, id, src, exp)
     local f = (id and idToFamily[id]) or (name and nameToFamily[name])
-    if f and ns.BUFFS[f].blessing and src and UnitIsUnit(src, unit) then found = true end
+    if f and ns.BUFFS[f].blessing and src and UnitIsUnit(src, unit) then
+      local left = (exp and exp > 0) and (exp - GetTime()) or 3600
+      -- running out soon: asking the same paladin again is fine
+      if left >= db.askRemainMin * 60 then found = true end
+    end
   end)
   return found
 end
 
 local function Lacking(fam)
-  local has = PlayerHas(fam)
-  if has == "class" then return false end
+  local has, left = PlayerHas(fam)
+  if has == "class" then return (left or 3600) < db.askRemainMin * 60 end
   if has == "camp" and db.askCampCounts then return false end
   return true
 end
@@ -646,10 +1137,47 @@ local function CanWhisper()
 end
 
 -- Low level players only have low ranks: buff them, but do not ask them.
-local ASK_LEVEL_STEPS = { 3, 5, 10, 15, 60 }   -- 60 = any level
 local function LevelOK(level)
   if not level or level <= 0 or db.askMaxBelow >= 60 then return true end
   return level >= (UnitLevel("player") or 1) - db.askMaxBelow
+end
+
+-- Say thanks when someone buffs you: /thank emote or a whisper.
+-- At most once per player every 30 minutes, never inside instances.
+-- Group and raid members buff each other anyway: no automatic whispers to
+-- them unless the player switches that on.
+local function GroupMuted(unit)
+  if db.msgToGroup or not unit or not UnitExists(unit) then return false end
+  return (UnitInParty(unit) or UnitInRaid(unit)) and true or false
+end
+
+local thankedAt = {}
+local function ThankFor(unit, full, short, fam)
+  local function why(reason)
+    if db.debug then Print(("thanks to %s skipped: %s"):format(tostring(full), reason)) end
+  end
+  if not db.thank then return why("switched off") end
+  if not unit or not full then return why("buffer unknown") end
+  if not CanWhisper() then return why("no whispers here") end
+  if GroupMuted(unit) then return why("group member") end
+  if thankedAt[full] and GetTime() - thankedAt[full] < ASK_COOLDOWN then return why("thanked recently") end
+  thankedAt[full] = GetTime()
+  if db.thankMode == "whisper" then
+    local lang = LangFor(full)
+    local text = Template(lang, "THANKS")
+    if not text or strtrim(text) == "" then return end
+    local names = ns.BUFF_NAMES[lang] or ns.BUFF_NAMES.en
+    local buff = names[fam] or ""
+    if db.useLinks then buff = SpellLink(FamilySpellID(fam)) or buff end
+    local sub = { name = short or full, buff = buff, ask = buff, me = UnitName("player") or "" }
+    text = text:gsub("{(%w+)}", function(k) return sub[k] end)
+    local send = (C_ChatInfo and C_ChatInfo.SendChatMessage) or SendChatMessage
+    local ok, err = pcall(send, text, "WHISPER", nil, full)
+    if not ok then why("whisper failed: " .. tostring(err)) end
+  else
+    local ok, err = pcall(DoEmote, "THANK", unit)
+    if not ok then why("emote failed: " .. tostring(err)) end
+  end
 end
 
 function ns.Remember(unit, fam)
@@ -736,6 +1264,9 @@ local function OnPlayerAura(info)
       local camp = (not fam) and CampFamily(id)
       if not fam and not camp then return end
       if src and UnitIsUnit(src, "player") then return end
+      if db.debug then
+        Print(("buff received: %s  id=%s  from=%s"):format(tostring(name), tostring(id), tostring(src and UnitName(src) or src)))
+      end
       local full, class, race, raceName
       if src and UnitExists(src) and UnitIsPlayer(src) then
         full = FullName(src)
@@ -743,6 +1274,10 @@ local function OnPlayerAura(info)
         raceName, race = UnitRace(src)
       end
       RecordReceived(full, class, fam or camp, camp and true, race, raceName)
+      if full and not camp then
+        local short = UnitName(src)
+        ThankFor(src, full, short, fam)
+      end
     end)
   end
 end
@@ -767,6 +1302,7 @@ local function OnOwnCast(spellID)
   if not db.askBack or not CanWhisper() or not LevelOK(p.level) then return end
   if askedAt[p.full] and GetTime() - askedAt[p.full] < ASK_COOLDOWN then return end
   if p.class == "PALADIN" and HasBlessingFrom(p.unit) then return end
+  if GroupMuted(p.unit) then return end
   local text = BuildAsk(p.full, p.short, p.realm, p.class, p.fam)
   if not text then return end
   local send = (C_ChatInfo and C_ChatInfo.SendChatMessage) or SendChatMessage
@@ -895,7 +1431,7 @@ function ns.RefreshReq(unit)
   if InCombatLockdown() then return end
   if not unit or not unit:match("^nameplate%d+$") then return end
   local plate = C_NamePlate.GetNamePlateForUnit(unit)
-  if not db.enabled or not db.showRequest or IsInInstance() or not plate
+  if not Active() or not AskOn() or IsInInstance() or not plate
     or (plate.IsForbidden and plate:IsForbidden()) or not Eligible(unit) then
     ns.ReleaseReq(unit); return
   end
@@ -944,7 +1480,7 @@ end
 ------------------------------------------------------------------------
 local STATE_TEXT = { MISSING = "STATE_MISSING", CAMP = "STATE_CAMP", EXPIRING = "STATE_EXPIRING" }
 local function AddTooltipLine(tooltip)
-  if not db or not db.enabled or tooltip ~= GameTooltip then return end
+  if not Active() or tooltip ~= GameTooltip then return end
   if not SmartEligible("mouseover") then return end
   local ok, fam, state, myFam = pcall(Decide, "mouseover")
   if not ok or not fam or not known[fam] then return end
@@ -971,6 +1507,9 @@ local function ApplyBinding()
   if db.bindKey then
     SetOverrideBindingClick(ev, true, db.bindKey, "BuffBarterSmartButton", "LeftButton")
   end
+  if db.nextKey then
+    SetOverrideBindingClick(ev, true, db.nextKey, "BuffBarterNextButton", "LeftButton")
+  end
 end
 ev:RegisterEvent("PLAYER_LOGIN")
 ev:SetScript("OnEvent", function(self, event, arg1, ...)
@@ -988,11 +1527,16 @@ ev:SetScript("OnEvent", function(self, event, arg1, ...)
     self:RegisterEvent("UI_ERROR_MESSAGE")
     self:RegisterEvent("PLAYER_TARGET_CHANGED")
     self:RegisterEvent("UPDATE_MOUSEOVER_UNIT")
+    self:RegisterEvent("PLAYER_ENTERING_WORLD")
+    self:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+    self:RegisterEvent("ZONE_CHANGED")
     ApplyBinding()
     RemoveOldMacro()
     self:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
     if BuildOptions then BuildOptions() end
-    C_Timer.NewTicker(0.5, function() RefreshAll(); UpdateSmart() end) -- range, expiry, mouseover
+    RestoreQueuePosition()
+    if ns.UpdateMinimap then ns.UpdateMinimap() end
+    C_Timer.NewTicker(0.5, function() RefreshAll(); UpdateSmart(); UpdateQueue() end) -- range, expiry, mouseover
     Print(L.LOADED)
   elseif event == "SPELLS_CHANGED" then
     BuildSpells()
@@ -1013,9 +1557,12 @@ ev:SetScript("OnEvent", function(self, event, arg1, ...)
     UpdateSmart()
   elseif event == "PLAYER_REGEN_ENABLED" then
     if pendingRebuild then RebuildAll() end
-    ApplyBinding(); UpdateSmart()
+    ApplyBinding(); UpdateSmart(); UpdateQueue()
   elseif event == "GROUP_ROSTER_UPDATE" then
     RebuildAll()
+  elseif event == "PLAYER_ENTERING_WORLD" or event == "ZONE_CHANGED_NEW_AREA" or event == "ZONE_CHANGED" then
+    CheckCityChange()
+    RebuildAll(); UpdateSmart(); UpdateQueue()
   elseif event == "ADDON_ACTION_BLOCKED" or event == "ADDON_ACTION_FORBIDDEN" then
     if db.debug then Print(("%s: %s  %s"):format(event, tostring(arg1), tostring(select(1, ...) or ""))) end
   elseif event == "UI_ERROR_MESSAGE" then
@@ -1056,9 +1603,21 @@ SLASH_BUFFBARTER2 = "/buffbarter"
 SlashCmdList.BUFFBARTER = function(msg)
   local cmd, a, b = strsplit(" ", strtrim(msg or ""):lower())
   if cmd == "" or cmd == "options" or cmd == "config" then
-    if ns.settingsCategory and Settings and Settings.OpenToCategory then
-      Settings.OpenToCategory(ns.settingsCategory:GetID())
-    end
+    ns.OpenSettings()
+  elseif cmd == "where" then
+    local mapID = C_Map and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
+    Print(("map %s, zone %s, city: %s"):format(tostring(mapID), tostring(GetRealZoneText()), tostring(InCity())))
+  elseif cmd == "icons" then
+    if InCombatLockdown() then Print(L.COMBAT_WAIT) return end
+    db.plateIcons = not db.plateIcons
+    RebuildAll()
+  elseif cmd == "list" then
+    if InCombatLockdown() then Print(L.COMBAT_WAIT) return end
+    db.showQueue = not db.showQueue
+    UpdateQueue()
+  elseif cmd == "minimap" then
+    db.minimap = not db.minimap
+    if ns.UpdateMinimap then ns.UpdateMinimap() end
   elseif cmd == "toggle" then
     if InCombatLockdown() then Print(L.COMBAT_WAIT) return end
     db.enabled = not db.enabled
@@ -1094,6 +1653,17 @@ SlashCmdList.BUFFBARTER = function(msg)
     db.bindKey = a:upper()
     ApplyBinding()
     Print(L.BIND_SET:format(db.bindKey))
+  elseif cmd == "bindnext" then
+    if InCombatLockdown() then Print(L.COMBAT_WAIT) return end
+    if not a or a == "" then Print(L.NEXT_USAGE) return end
+    db.nextKey = a:upper()
+    ApplyBinding()
+    Print(L.NEXT_SET:format(db.nextKey))
+  elseif cmd == "unbindnext" then
+    if InCombatLockdown() then Print(L.COMBAT_WAIT) return end
+    db.nextKey = nil
+    ApplyBinding()
+    Print(L.BIND_CLEARED)
   elseif cmd == "unbind" then
     if InCombatLockdown() then Print(L.COMBAT_WAIT) return end
     db.bindKey = nil
@@ -1392,16 +1962,96 @@ local function BuildStatsFrame()
     self.footer:SetText(L.STATS_FOOTER:format(r.camp or 0, date("%d.%m.%Y", st.since)))
   end
 
+  -- Close directly instead of through the template's panel logic, which
+  -- does not work reliably in combat.
+  local close = f.CloseButton or _G["BuffBarterStatsFrameCloseButton"]
+  if close then close:SetScript("OnClick", function() f:Hide() end) end
   tinsert(UISpecialFrames, "BuffBarterStatsFrame") -- Esc closes it
   return f
 end
 
 local function ShowStats()
+  if statsFrame and statsFrame:IsShown() then statsFrame:Hide() return end -- toggle
   statsFrame = statsFrame or BuildStatsFrame()
   statsFrame:Refresh()
   statsFrame:Show()
 end
 ns.ShowStats = ShowStats
+
+------------------------------------------------------------------------
+-- Minimap icon: left click settings, right click statistics,
+-- shift-click shows or hides the buff list. Drag to move it.
+------------------------------------------------------------------------
+function ns.OpenSettings()
+  if ns.settingsCategory and Settings and Settings.OpenToCategory then
+    Settings.OpenToCategory(ns.settingsCategory:GetID())
+  end
+end
+
+local mm
+local function PlaceMinimapButton()
+  local angle = math.rad(db.minimapAngle or 210)
+  local r = (Minimap:GetWidth() / 2) + 5
+  mm:ClearAllPoints()
+  mm:SetPoint("CENTER", Minimap, "CENTER", math.cos(angle) * r, math.sin(angle) * r)
+end
+
+function ns.UpdateMinimap()
+  if not mm then
+    mm = CreateFrame("Button", "BuffBarterMinimapButton", Minimap)
+    mm:SetSize(31, 31)
+    mm:SetFrameStrata("MEDIUM")
+    mm:SetFrameLevel(8)
+    mm:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    mm:RegisterForDrag("LeftButton")
+    mm:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+    local bg = mm:CreateTexture(nil, "BACKGROUND")
+    bg:SetSize(20, 20)
+    bg:SetPoint("TOPLEFT", 7, -5)
+    bg:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
+    local icon = mm:CreateTexture(nil, "ARTWORK")
+    icon:SetSize(19, 19)
+    icon:SetPoint("TOPLEFT", 6, -6)
+    icon:SetTexture("Interface\\AddOns\\BuffBarter\\Media\\icon")
+    local border = mm:CreateTexture(nil, "OVERLAY")
+    border:SetSize(53, 53)
+    border:SetPoint("TOPLEFT")
+    border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+    mm:SetScript("OnClick", function(self, button)
+      if button == "RightButton" then
+        if ns.ShowStats then ns.ShowStats() end
+      elseif IsShiftKeyDown() then
+        if InCombatLockdown() then Print(L.COMBAT_WAIT) return end
+        db.showQueue = not db.showQueue
+        UpdateQueue()
+      else
+        ns.OpenSettings()
+      end
+    end)
+    mm:SetScript("OnDragStart", function(self)
+      self:SetScript("OnUpdate", function()
+        local mx, my = Minimap:GetCenter()
+        local px, py = GetCursorPosition()
+        local scale = Minimap:GetEffectiveScale()
+        db.minimapAngle = math.deg(math.atan2(py / scale - my, px / scale - mx))
+        PlaceMinimapButton()
+      end)
+    end)
+    mm:SetScript("OnDragStop", function(self) self:SetScript("OnUpdate", nil) end)
+    mm:SetScript("OnEnter", function(self)
+      GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+      GameTooltip:AddLine("BuffBarter")
+      GameTooltip:AddLine(L.MM_LEFT, 1, 1, 1)
+      GameTooltip:AddLine(L.MM_RIGHT, 1, 1, 1)
+      GameTooltip:AddLine(L.MM_SHIFT, 1, 1, 1)
+      GameTooltip:AddLine(L.MM_DRAG, 0.6, 0.6, 0.6)
+      GameTooltip:Show()
+    end)
+    mm:SetScript("OnLeave", GameTooltip_Hide)
+  end
+  PlaceMinimapButton()
+  mm:SetShown(db.minimap and true or false)
+end
 
 ------------------------------------------------------------------------
 -- Settings panel (Esc > Options > AddOns > BuffBarter, or /barter)
@@ -1465,6 +2115,50 @@ BuildOptions = function()
     return eb
   end
 
+  -- Plain slider (no template needed). fmt gets the value text via %s.
+  local function Slider(fmt, key, minV, maxV, valueText, after)
+    local label = c:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    label:SetPoint("TOPLEFT", 12, y)
+    local sl = CreateFrame("Slider", nil, c)
+    sl:SetOrientation("HORIZONTAL")
+    sl:SetSize(320, 16)
+    sl:SetPoint("TOPLEFT", 14, y - 20)
+    sl:SetMinMaxValues(minV, maxV)
+    sl:SetValueStep(1)
+    sl:SetObeyStepOnDrag(true)
+    sl:EnableMouse(true)
+    sl:EnableMouseWheel(true)
+    local track = sl:CreateTexture(nil, "BACKGROUND")
+    track:SetPoint("LEFT"); track:SetPoint("RIGHT")
+    track:SetHeight(6)
+    track:SetColorTexture(0.2, 0.2, 0.25, 0.9)
+    local fill = sl:CreateTexture(nil, "ARTWORK")
+    fill:SetPoint("LEFT")
+    fill:SetHeight(6)
+    fill:SetColorTexture(0.95, 0.75, 0.25, 0.9)
+    sl:SetThumbTexture("Interface\\Buttons\\UI-SliderBar-Button-Horizontal")
+    local lo = sl:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+    lo:SetPoint("TOPLEFT", sl, "BOTTOMLEFT", 0, -2); lo:SetText(valueText(minV))
+    local hi = sl:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+    hi:SetPoint("TOPRIGHT", sl, "BOTTOMRIGHT", 0, -2); hi:SetText(valueText(maxV))
+    local function show(v)
+      label:SetText(fmt:format("|cffffd100" .. valueText(v) .. "|r"))
+      fill:SetWidth(math.max(1, 320 * (v - minV) / (maxV - minV)))
+    end
+    sl:SetScript("OnValueChanged", function(self, v)
+      v = math.floor(v + 0.5)
+      db[key] = v
+      show(v)
+      if after then after() end
+    end)
+    sl:SetScript("OnMouseWheel", function(self, delta)
+      self:SetValue(math.min(maxV, math.max(minV, self:GetValue() + delta)))
+    end)
+    sl:SetValue(db[key])
+    show(db[key])
+    y = y - 58
+  end
+
   local function LangButton(fmt, key)
     local btn = CreateFrame("Button", nil, c, "UIPanelButtonTemplate")
     btn:SetSize(330, 24)
@@ -1485,9 +2179,20 @@ BuildOptions = function()
     btn:SetScript("OnClick", function() if ns.ShowStats then ns.ShowStats() end end)
   end
   Check(L.OPT_ENABLED, "enabled", RebuildAll)
+  Check(L.OPT_PLATE_ICONS, "plateIcons", RebuildAll)
+  Check(L.OPT_MINIMAP, "minimap", function() ns.UpdateMinimap() end)
   Check(L.OPT_STRANGERS, "strangers", RebuildAll)
   Check(L.OPT_CAMPBUFFED, "campCountsAsBuffed", RebuildAll)
   Check(L.OPT_ONECLICK, "oneClick", RebuildAll)
+  Check(L.OPT_QUEUE, "showQueue")
+  Check(L.OPT_QUEUE_LOCK, "queueLocked")
+  Text(L.OPT_NEXT_NOTE, "GameFontHighlightSmall", 30)
+  Check(L.OPT_DISPEL, "dispel", RebuildAll)
+  local function zoneChanged() RebuildAll(); UpdateQueue() end
+  Check(L.OPT_OFF_CITY, "offInCities", zoneChanged)
+  Check(L.OPT_OFF_DUNGEON, "offInDungeon", zoneChanged)
+  Check(L.OPT_OFF_RAID, "offInRaid", zoneChanged)
+  Check(L.OPT_OFF_PVP, "offInPvP", zoneChanged)
   Check(L.OPT_REQUEST, "showRequest", RebuildAll)
   do
     local btn = CreateFrame("Button", nil, c, "UIPanelButtonTemplate")
@@ -1505,28 +2210,27 @@ BuildOptions = function()
   -- Asking back
   Header(L.OPT_ASK_HEADER)
   Text(L.OPT_ASK_NOTE, "GameFontHighlightSmall", 30)
-  Check(L.OPT_ASK, "askBack")
+  Check(L.OPT_ASK, "askBack", function() db.askBackChosen = true end)
   Check(L.OPT_ASK_MISSING, "askOnlyIfMissing")
   Check(L.OPT_ASK_CAMP, "askCampCounts")
+  Check(L.OPT_THANK, "thank")
+  Check(L.OPT_MSG_GROUP, "msgToGroup")
   do
     local btn = CreateFrame("Button", nil, c, "UIPanelButtonTemplate")
-    btn:SetSize(470, 24)
+    btn:SetSize(330, 24)
     btn:SetPoint("TOPLEFT", 10, y)
-    local function label()
-      local v = db.askMaxBelow >= 60 and L.LEVEL_ANY or tostring(db.askMaxBelow)
-      btn:SetText(L.OPT_ASK_LEVEL:format(v))
-    end
+    local function label() btn:SetText(L.OPT_THANK_MODE:format(L["THANKMODE_" .. db.thankMode])) end
     btn:SetScript("OnClick", function()
-      local nextValue = ASK_LEVEL_STEPS[1]
-      for i, v in ipairs(ASK_LEVEL_STEPS) do
-        if v == db.askMaxBelow then nextValue = ASK_LEVEL_STEPS[i % #ASK_LEVEL_STEPS + 1] end
-      end
-      db.askMaxBelow = nextValue
-      label(); RebuildAll()
+      db.thankMode = (db.thankMode == "emote") and "whisper" or "emote"
+      db.thankModeChosen = true
+      label()
     end)
     label()
     y = y - 30
   end
+  Slider(L.OPT_ASK_REMAIN, "askRemainMin", 1, 60, function(v) return tostring(v) end, RebuildAll)
+  Slider(L.OPT_ASK_LEVEL, "askMaxBelow", 1, 60,
+    function(v) return v >= 60 and L.LEVEL_ANY or tostring(v) end, RebuildAll)
   Check(L.OPT_LINKS, "useLinks")
   LangButton(L.OPT_MYLANG, "myLang")
 
@@ -1562,6 +2266,12 @@ BuildOptions = function()
       end)
   end
 
+  boxes[#boxes + 1] = Input(L.OPT_THANK_TEXT,
+    function() return Template(editLang, "THANKS") end,
+    function(v)
+      db.templates[editLang] = db.templates[editLang] or {}
+      db.templates[editLang].THANKS = v
+    end)
   boxes[#boxes + 1] = Input(L.OPT_REQUEST_TEXT,
     function() return Template(editLang, "REQUEST") end,
     function(v)
