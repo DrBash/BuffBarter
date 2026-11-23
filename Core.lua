@@ -39,6 +39,7 @@ local DEFAULTS = {
   offInRaid = false,
   offInPvP = false,          -- battlegrounds and arenas
   offInCities = true,        -- capital cities are too crowded             -- show diseases, poisons, curses, magic you can remove
+  acceptRequests = true,     -- popup when another BuffBarter user asks you for a buff
   minimap = true,            -- minimap icon
   minimapAngle = 210,             -- key that buffs the first player of the list           -- only ask players at most this many levels below you           -- icon click targets the player by name, casts, retargets
   pvpMode = "warn",          -- PvP flagged targets: "warn" or "block"           -- {buff} and {ask} as clickable spell links
@@ -287,9 +288,18 @@ local function FindDispel(unit)
   return found
 end
 
+-- The modern client may not have DebuffTypeColor any more.
+local DISPEL_RGB = {
+  Magic   = { 0.2, 0.6, 1 },
+  Curse   = { 0.6, 0, 1 },
+  Disease = { 0.6, 0.4, 0 },
+  Poison  = { 0, 0.6, 0 },
+}
 local function DispelColor(dtype)
   local c = DebuffTypeColor and DebuffTypeColor[dtype]
   if c then return c.r, c.g, c.b end
+  c = DISPEL_RGB[dtype]
+  if c then return c[1], c[2], c[3] end
   return 0.6, 0.2, 1
 end
 
@@ -908,7 +918,7 @@ local function RestoreQueuePosition()
 end
 
 local function UpdateQueue()
-  if not db or InCombatLockdown() then return end
+  if not db or InCombatLockdown() or ns.demo then return end
   if not Active() or not db.showQueue then
     queue:Hide()
     nextBtn:SetAttribute("macrotext", nil)
@@ -1381,6 +1391,8 @@ local function ReqOnClick(self)
   if pcall(send, text, "WHISPER", nil, full) then
     askedAt[full] = GetTime()
     RecordAsk(full, "requests")
+    -- if the other player runs BuffBarter too, they get a window with a buff button
+    if ns.SendBuffRequest then ns.SendBuffRequest(full, self.fam) end
     if ns.RefreshReq then ns.RefreshReq(self.unit) end
   end
 end
@@ -1453,6 +1465,7 @@ function ns.RefreshReq(unit)
   b.unit, b.fam, b.asked = unit, fam, asked
   local id = FamilySpellID(fam)
   local _, icon = SpellInfo(id)
+  if not icon and id and C_Spell and C_Spell.GetSpellTexture then icon = C_Spell.GetSpellTexture(id) end
   b.icon:SetTexture(icon or 134400)
   if asked then
     b.label:SetText(L.REQ_ASKED); b.label:SetTextColor(0.7, 0.7, 0.7)
@@ -1464,6 +1477,477 @@ function ns.RefreshReq(unit)
     b:SetAlpha(1)
   end
   b:Show()
+end
+
+------------------------------------------------------------------------
+-- Buff requests between BuffBarter users. A chat link cannot cast anything,
+-- but an addon message can open a window on the other side, and a click
+-- there (by that player) buffs you.
+------------------------------------------------------------------------
+local PREFIX = "BuffBarter"
+if C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix then
+  C_ChatInfo.RegisterAddonMessagePrefix(PREFIX)
+end
+
+local incoming = {}      -- { short, tarName, fam, level, t, self }
+local lastFrom = {}      -- ["First-Last"] = time of the last accepted request
+local REQ_SPAM, REQ_TTL, REQ_MAX = 120, 60, 3
+
+function ns.SendBuffRequest(full, fam)
+  if not (C_ChatInfo and C_ChatInfo.SendAddonMessage) or not full or not fam then return end
+  pcall(C_ChatInfo.SendAddonMessage, PREFIX, ("REQ:%s:%d"):format(fam, UnitLevel("player") or 1), "WHISPER", full)
+end
+
+local popup = CreateFrame("Frame", "BuffBarterRequestPopup", queueHolder)
+popup:SetSize(320, 92)
+popup:SetPoint("TOP", UIParent, "TOP", 0, -150)
+popup:SetFrameStrata("DIALOG")
+popup:EnableMouse(true)
+popup:Hide()
+popup.bg = popup:CreateTexture(nil, "BACKGROUND")
+popup.bg:SetAllPoints()
+popup.bg:SetColorTexture(0.05, 0.07, 0.1, 0.9)
+popup.edge = popup:CreateTexture(nil, "BORDER")
+popup.edge:SetPoint("TOPLEFT"); popup.edge:SetPoint("TOPRIGHT"); popup.edge:SetHeight(2)
+popup.edge:SetColorTexture(0.3, 0.75, 1, 0.9)
+popup.title = popup:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+popup.title:SetPoint("TOPLEFT", 10, -8)
+popup.icon = popup:CreateTexture(nil, "ARTWORK")
+popup.icon:SetSize(32, 32)
+popup.icon:SetPoint("TOPLEFT", 10, -24)
+popup.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+popup.text = popup:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+popup.text:SetPoint("TOPLEFT", popup.icon, "TOPRIGHT", 10, -2)
+popup.text:SetWidth(258)
+popup.text:SetJustifyH("LEFT")
+
+popup.buff = CreateFrame("Button", "BuffBarterRequestBuff", popup, "SecureActionButtonTemplate,UIPanelButtonTemplate")
+popup.buff:SetSize(130, 24)
+popup.buff:SetPoint("BOTTOMLEFT", 52, 10)
+popup.buff:RegisterForClicks("AnyUp", "AnyDown")
+popup.buff:SetAttribute("type", "macro")
+popup.buff:SetText(L.REQ_POPUP_BUFF)
+
+popup.no = CreateFrame("Button", nil, popup, "UIPanelButtonTemplate")
+popup.no:SetSize(110, 24)
+popup.no:SetPoint("LEFT", popup.buff, "RIGHT", 8, 0)
+popup.no:SetText(L.REQ_POPUP_NO)
+
+local function ShowRequest()
+  if InCombatLockdown() then return end -- the window waits until after combat
+  local now = GetTime()
+  while incoming[1] and now - incoming[1].t > REQ_TTL do table.remove(incoming, 1) end
+  local r = incoming[1]
+  if not r or not known[r.fam] then
+    if r then table.remove(incoming, 1) end
+    popup.buff:SetAttribute("macrotext", nil)
+    popup:Hide()
+    return
+  end
+  local spell = CastName(r.fam, r.level)
+  if r.self then
+    popup.buff:SetAttribute("macrotext", "/cast [@player] " .. spell)
+  else
+    popup.buff:SetAttribute("macrotext", "/tar " .. r.tarName .. "\n/cast [@target,help,nodead] " .. spell .. "\n/targetlasttarget")
+  end
+  popup.title:SetText("BuffBarter: " .. L.REQ_POPUP_TITLE .. (#incoming > 1 and ("  |cff8a8a8a(+" .. (#incoming - 1) .. ")|r") or ""))
+  popup.icon:SetTexture(known[r.fam].icon)
+  popup.text:SetText(L.REQ_POPUP:format(r.short, known[r.fam].name))
+  popup:Show()
+end
+ns.ShowRequest = ShowRequest
+
+local function NextRequest()
+  if InCombatLockdown() then return end
+  table.remove(incoming, 1)
+  ShowRequest()
+end
+
+popup.buff:HookScript("PostClick", function(self, mouse, down)
+  if ActionEdge(down) then C_Timer.After(0.1, NextRequest) end
+end)
+popup.no:SetScript("OnClick", NextRequest)
+
+local function OnAddonMessage(prefix, msg, channel, sender)
+  if prefix ~= PREFIX or not db or not db.acceptRequests or not msg or not sender then return end
+  local fam, lvl = msg:match("^REQ:(%u+):(%d+)$")
+  if not fam or not known[fam] then return end
+  if not Active() or IsInInstance() then return end
+  if lastFrom[sender] and GetTime() - lastFrom[sender] < REQ_SPAM then return end
+  if #incoming >= REQ_MAX then return end
+  lastFrom[sender] = GetTime()
+  incoming[#incoming + 1] = {
+    short = sender:match("^[^-]+") or sender,
+    tarName = (sender:gsub("%-", " ")),
+    fam = fam, level = tonumber(lvl), t = GetTime(),
+  }
+  if PlaySound and SOUNDKIT and SOUNDKIT.TELL_MESSAGE then pcall(PlaySound, SOUNDKIT.TELL_MESSAGE) end
+  ShowRequest()
+end
+
+-- /barter testrequest: shows the window with yourself as the sender.
+local function TestRequest()
+  local fam
+  for _, f in ipairs({ "KINGS", "MIGHT", "WISDOM", "FORTITUDE", "INTELLECT", "WILD", "SPIRIT", "THORNS", "LIGHT" }) do
+    if known[f] then fam = f break end
+  end
+  if not fam then Print(L.KNOWN_NONE) return end
+  table.insert(incoming, 1, { short = UnitName("player"), fam = fam, level = UnitLevel("player"), t = GetTime(), self = true })
+  ShowRequest()
+end
+
+------------------------------------------------------------------------
+-- Demo scenes for screenshots (/barter demo <scene>). Everything here is
+-- display only: invented players, no casting, no whispers are sent.
+------------------------------------------------------------------------
+do
+  local demoFrames, demoPool = {}, {}
+  local anchor = CreateFrame("Frame", nil, UIParent)
+  anchor:SetSize(130, 16)
+  anchor:SetPoint("CENTER", UIParent, "CENTER", 0, 170)
+  local anchor2 = CreateFrame("Frame", nil, UIParent)
+  anchor2:SetSize(130, 16)
+  anchor2:SetPoint("CENTER", UIParent, "CENTER", 0, 70)
+  local statsMoved = false
+
+  local DEMO_PLAYERS = {
+    { name = "Mira Dawnfeather",  class = "PRIEST",  level = 60, state = "MISSING" },
+    { name = "Thorin Ashbeard",   class = "WARRIOR", level = 58, state = "CAMP" },
+    { name = "Selene Moonbrook",  class = "MAGE",    level = 60, state = "EXPIRING", left = 240 },
+    { name = "Elowen Fairwind",   class = "DRUID",   level = 57, state = "DISPEL" },
+    { name = "Garrick Holt",      class = "ROGUE",   level = 52, state = "SWAP" },
+    { name = "Bram Ironvale",     class = "HUNTER",  level = 60, state = "PVP" },
+    { name = "Pip Copperkettle",  class = "WARLOCK", level = 18, state = "MISSING", far = true },
+  }
+  local DEBUFF_ICON = {
+    Magic   = "Interface\\Icons\\Spell_Frost_FrostNova",
+    Curse   = "Interface\\Icons\\Spell_Shadow_CurseOfMannoroth",
+    Disease = "Interface\\Icons\\Spell_Shadow_CallofBone",
+    Poison  = "Interface\\Icons\\Spell_Nature_CorrosiveBreath",
+  }
+
+  local function FamName(fam)
+    if known[fam] then return known[fam].name end
+    local d = ns.BUFFS[fam]
+    return (d and SpellInfo(d.ids[1])) or fam
+  end
+  local function FamIcon(fam)
+    if known[fam] then return known[fam].icon end
+    local d = ns.BUFFS[fam]
+    if not d then return 134400 end
+    local _, icon = SpellInfo(d.ids[1])
+    if not icon and C_Spell and C_Spell.GetSpellTexture then icon = C_Spell.GetSpellTexture(d.ids[1]) end
+    return icon or 134400
+  end
+  -- the buff you would hand out, and a second one for "swap"
+  local function MyFams()
+    local list = {}
+    for _, f in ipairs({ "KINGS", "MIGHT", "WISDOM", "LIGHT", "FORTITUDE", "INTELLECT", "WILD", "SPIRIT", "THORNS" }) do
+      if known[f] then list[#list + 1] = f end
+    end
+    if #list == 0 then list = { "KINGS", "MIGHT" } end
+    return list[1], list[2] or list[1]
+  end
+  -- a debuff type you can actually remove
+  local function MyDispelType()
+    local _, myClass = UnitClass("player")
+    for _, d in ipairs(ns.DISPELS[myClass] or {}) do
+      for _, t in ipairs({ "Disease", "Curse", "Poison", "Magic" }) do
+        if d.types[t] then return t end
+      end
+    end
+    return "Disease"
+  end
+  local function PvPTex()
+    return UnitFactionGroup("player") == "Horde" and "Interface\\TargetingFrame\\UI-PVP-Horde"
+      or "Interface\\TargetingFrame\\UI-PVP-Alliance"
+  end
+
+  local function NewIcon(ask)
+    local b = table.remove(demoPool) or CreateFrame("Frame", nil, UIParent)
+    if not b.icon then
+      b.border = b:CreateTexture(nil, "BACKGROUND")
+      b.border:SetPoint("TOPLEFT", -2, 2)
+      b.border:SetPoint("BOTTOMRIGHT", 2, -2)
+      b.icon = b:CreateTexture(nil, "ARTWORK")
+      b.icon:SetAllPoints()
+      b.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+      b.label = b:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+      b.label:SetPoint("TOP", b, "BOTTOM", 0, -2)
+      b.pvp = b:CreateTexture(nil, "OVERLAY", nil, 7)
+      b.pvp:SetTexCoord(0, 0.62, 0, 0.62)
+    end
+    local size = ask and math.floor(db.size * 0.85) or db.size
+    b:SetSize(size, size)
+    b:SetFrameStrata("MEDIUM")
+    b.pvp:SetSize(math.floor(db.size * 0.9), math.floor(db.size * 0.9))
+    b.pvp:ClearAllPoints()
+    b.pvp:SetPoint("CENTER", b, "TOPRIGHT", -2, -2)
+    b.pvp:Hide()
+    b.label:SetText("")
+    b:ClearAllPoints()
+    b:SetAlpha(1)
+    b:Show()
+    demoFrames[#demoFrames + 1] = b
+    return b
+  end
+
+  -- kind: MISSING, CAMP, EXPIRING, SWAP, DISPEL, PVP, ASK
+  local function StyleIcon(b, kind)
+    local fam, other = MyFams()
+    local c
+    if kind == "DISPEL" then
+      local t = MyDispelType()
+      b.icon:SetTexture(DEBUFF_ICON[t])
+      c = { DispelColor(t) }
+      b.label:SetText(L["DISPEL_" .. t] or t); b.label:SetTextColor(DispelColor(t))
+    elseif kind == "ASK" then
+      local _, myClass = UnitClass("player")
+      local askFam = (myClass == "PRIEST") and "INTELLECT" or "FORTITUDE"
+      b.icon:SetTexture(FamIcon(askFam))
+      c = { 0.2, 0.8, 1 }
+      b.label:SetText(L.REQ_LABEL); b.label:SetTextColor(0.4, 0.85, 1)
+    else
+      b.icon:SetTexture(FamIcon(kind == "SWAP" and other or fam))
+      if kind == "PVP" then
+        c = { 1, 0.1, 0.1 }
+        b.pvp:SetTexture(PvPTex()); b.pvp:Show()
+        b.label:SetText(L.PVP_LABEL); b.label:SetTextColor(1, 0.25, 0.25)
+      else
+        c = STATE_COLOR[kind] or STATE_COLOR.MISSING
+        if kind == "CAMP" then b.label:SetText(L.CAMP); b.label:SetTextColor(1, 0.5, 0)
+        elseif kind == "EXPIRING" then b.label:SetText("4m"); b.label:SetTextColor(1, 0.85, 0)
+        elseif kind == "SWAP" then b.label:SetText(L.SWAP); b.label:SetTextColor(0.7, 0.3, 1) end
+      end
+    end
+    b.border:SetColorTexture(c[1], c[2], c[3], 0.9)
+  end
+
+  -- Your target's nameplate if there is one, else a spot above your character.
+  local function Plate()
+    local p = UnitExists("target") and C_NamePlate.GetNamePlateForUnit("target")
+    if p and not (p.IsForbidden and p:IsForbidden()) then return p end
+    return anchor
+  end
+
+  local function ShowOnPlate(kind, withAsk, fallback)
+    local plate = Plate()
+    if plate == anchor and fallback then plate = fallback end
+    local b = NewIcon()
+    StyleIcon(b, kind)
+    b:SetPoint("CENTER", plate, "CENTER", 0, db.offset)
+    if withAsk then
+      local a = NewIcon(true)
+      StyleIcon(a, "ASK")
+      a:SetPoint("LEFT", plate, "RIGHT", 2, db.offset)
+    end
+  end
+
+  local function ShowLegend(fixed)
+    local plate = fixed and anchor or Plate()
+    local kinds = { "MISSING", "CAMP", "EXPIRING", "SWAP", "DISPEL", "PVP", "ASK" }
+    local step = db.size + 30
+    for i, k in ipairs(kinds) do
+      local b = NewIcon(k == "ASK")
+      StyleIcon(b, k)
+      b:SetPoint("CENTER", plate, "CENTER", (i - (#kinds + 1) / 2) * step, db.offset)
+    end
+  end
+
+  local function FillList(onlyPvP, onlyDispel, folded)
+    local fam, other = MyFams()
+    local _, myClass = UnitClass("player")
+    local rows = {}
+    rows[#rows + 1] = { name = L.QUEUE_YOU, class = myClass, level = UnitLevel("player"), state = "MISSING" }
+    for _, p in ipairs(DEMO_PLAYERS) do rows[#rows + 1] = p end
+    for i = 1, QUEUE_ROWS do
+      local r, e = queue.rows[i], rows[i]
+      r:SetAttribute("macrotext", nil)
+      r.unit, r.fam, r.disp, r.pvpFlag, r.needsArm = nil, nil, nil, nil, nil
+      if e and not folded then
+        local pvp = e.state == "PVP"
+        r.bg:SetColorTexture(pvp and 0.6 or 1, pvp and 0.05 or 1, pvp and 0.05 or 1,
+          pvp and 0.25 or ((i % 2 == 0) and 0.05 or 0.02))
+        if e.state == "DISPEL" then
+          local t = MyDispelType()
+          r.icon:SetTexture(DEBUFF_ICON[t])
+          r.tag:SetText(L["DISPEL_" .. t] or t); r.tag:SetTextColor(DispelColor(t))
+        else
+          r.icon:SetTexture(FamIcon(e.state == "SWAP" and other or fam))
+          if pvp then r.tag:SetText(L.PVP_ARM); r.tag:SetTextColor(1, 0.25, 0.25)
+          elseif e.state == "CAMP" then r.tag:SetText(L.CAMP); r.tag:SetTextColor(1, 0.5, 0)
+          elseif e.state == "EXPIRING" then r.tag:SetText(("%dm"):format(e.left / 60)); r.tag:SetTextColor(1, 0.85, 0)
+          elseif e.state == "SWAP" then r.tag:SetText(L.SWAP); r.tag:SetTextColor(0.7, 0.3, 1)
+          else r.tag:SetText("") end
+        end
+        r.name:SetText(e.name .. "  |cff8a8a8a" .. (e.level or "") .. "|r")
+        r.name:SetTextColor(ClassRGB(e.class))
+        local dim = e.far or (onlyPvP and not pvp and i > 1) or (onlyDispel and e.state ~= "DISPEL" and i > 1)
+        r:SetAlpha(dim and 0.4 or 1)
+        r:Show()
+      else
+        r:Hide()
+      end
+    end
+    local n = folded and 0 or math.min(#rows, QUEUE_ROWS)
+    queue.title:SetText(folded and ("BuffBarter  |cffffffff" .. #rows .. "|r  |cff8a8a8a" .. L.QUEUE_CITY_TAG .. "|r")
+      or ("BuffBarter  |cffffffff" .. #rows .. "|r"))
+    queue.toggle:SetNormalTexture(folded and "Interface\\Buttons\\UI-PlusButton-Up" or "Interface\\Buttons\\UI-MinusButton-Up")
+    queue.eye.tex:SetDesaturated(folded); queue.eye:SetAlpha(folded and 0.5 or 1)
+    queue.ask.tex:SetDesaturated(folded); queue.ask:SetAlpha(folded and 0.5 or 1)
+    queue.empty:SetText("")
+    queue:SetHeight(folded and 20 or (26 + n * ROW_H))
+    queue:Show()
+  end
+
+  -- a second, folded list as it looks in a capital city
+  local mini
+  local function ShowCityMini()
+    if not mini then
+      mini = CreateFrame("Frame", nil, UIParent)
+      mini:SetSize(210, 20)
+      mini.bg = mini:CreateTexture(nil, "BACKGROUND"); mini.bg:SetAllPoints()
+      mini.bg:SetColorTexture(0.05, 0.07, 0.1, 0.75)
+      mini.edge = mini:CreateTexture(nil, "BORDER")
+      mini.edge:SetPoint("TOPLEFT"); mini.edge:SetPoint("TOPRIGHT"); mini.edge:SetHeight(2)
+      mini.edge:SetColorTexture(0.95, 0.75, 0.25, 0.9)
+      mini.title = mini:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+      mini.title:SetPoint("TOPLEFT", 8, -6)
+      local function Tex(path, x, crop)
+        local t = mini:CreateTexture(nil, "ARTWORK")
+        t:SetSize(16, 16); t:SetPoint("TOPRIGHT", x, -2); t:SetTexture(path)
+        if crop then t:SetTexCoord(0.08, 0.92, 0.08, 0.92) end
+        return t
+      end
+      mini.plus = Tex("Interface\\Buttons\\UI-PlusButton-Up", -4)
+      mini.eye = Tex("Interface\\Icons\\INV_Misc_Eye_01", -24, true)
+      mini.ask = Tex("Interface\\ChatFrame\\UI-ChatIcon-Chat-Up", -44)
+      mini.eye:SetDesaturated(true); mini.eye:SetAlpha(0.5)
+      mini.ask:SetDesaturated(true); mini.ask:SetAlpha(0.5)
+    end
+    mini.title:SetText("BuffBarter  |cffffffff7|r  |cff8a8a8a" .. L.QUEUE_CITY_TAG .. "|r")
+    mini:ClearAllPoints()
+    mini:SetPoint("TOPLEFT", queue, "TOPRIGHT", 16, 0)
+    mini:Show()
+    demoFrames[#demoFrames + 1] = mini
+  end
+
+  local function ShowStatsDemo()
+    if not ns.ShowStats then return end
+    local f = _G.BuffBarterStatsFrame
+    if not (f and f:IsShown()) then ns.ShowStats() end
+    f = _G.BuffBarterStatsFrame
+    if f then
+      f:ClearAllPoints()
+      f:SetPoint("RIGHT", UIParent, "RIGHT", -60, 0)
+      statsMoved = true
+    end
+  end
+
+  local function ChatLine(text, r, g, b)
+    DEFAULT_CHAT_FRAME:AddMessage(text, r, g, b)
+  end
+  local function Whisper(to, text)
+    local c = ChatTypeInfo and ChatTypeInfo.WHISPER_INFORM or { r = 1, g = 0.5, b = 1 }
+    local fmt = CHAT_WHISPER_INFORM_GET or "To %s: "
+    ChatLine(fmt:format("[" .. to .. "]") .. text, c.r, c.g, c.b)
+  end
+  local function Fill(key, sub)
+    local text = Template(db.myLang, key)
+    if not text or strtrim(text) == "" then text = ns.DEFAULT_TEMPLATES.en[key] or "" end
+    return (text:gsub("{(%w+)}", function(k) return sub[k] or "" end))
+  end
+  local function Named(fam)
+    local names = ns.BUFF_NAMES[db.myLang] or ns.BUFF_NAMES.en
+    local n = names[fam] or FamName(fam)
+    if db.useLinks then n = SpellLink(FamilySpellID(fam)) or n end
+    return n
+  end
+  local function ShowWhispers()
+    local fam = MyFams()
+    local _, myClass = UnitClass("player")
+    local me = UnitName("player") or ""
+    -- ask back after buffing a priest
+    local askBack = Fill("PRIEST", { name = "Mira", buff = Named(fam), ask = Named("FORTITUDE"), me = me })
+    Whisper("Mira Dawnfeather", askBack)
+    -- one click request to a mage
+    local askFam = (myClass == "MAGE") and "FORTITUDE" or "INTELLECT"
+    Whisper("Selene Moonbrook", Fill("REQUEST", { name = "Selene", ask = Named(askFam), buff = Named(askFam), me = me }))
+    -- automatic thanks
+    Whisper("Mira Dawnfeather", Fill("THANKS", { name = "Mira", buff = Named("FORTITUDE"), me = me }))
+  end
+
+  local function ShowPvPChat()
+    Print("|cffff4040" .. L.PVP_ARMED:format("Bram Ironvale", ARM_TIME) .. "|r")
+  end
+
+  local function ShowPopup()
+    local fam = MyFams()
+    if not known[fam] then Print(L.KNOWN_NONE) return end
+    table.insert(incoming, 1, { short = "Thorin Ashbeard", fam = fam, level = 58,
+                                t = GetTime() + 3600, self = true, demo = true })
+    ShowRequest()
+  end
+
+  local function Clear()
+    for _, b in ipairs(demoFrames) do
+      b:Hide(); b:ClearAllPoints()
+      if b ~= mini then demoPool[#demoPool + 1] = b end
+    end
+    wipe(demoFrames)
+    local f = _G.BuffBarterStatsFrame
+    if statsMoved and f then
+      f:Hide(); f:ClearAllPoints(); f:SetPoint("CENTER")
+      statsMoved = false
+    end
+    for i = #incoming, 1, -1 do if incoming[i].demo then table.remove(incoming, i) end end
+    ShowRequest()
+  end
+
+  local SCENES = {
+    list    = function() FillList() end,
+    icons   = function() ShowLegend() end,
+    ask     = function() ShowOnPlate("MISSING", true) end,
+    pvp     = function() ShowOnPlate("PVP"); FillList(true); ShowPvPChat() end,
+    dispel  = function() ShowOnPlate("DISPEL"); FillList(false, true) end,
+    whisper = function() ShowWhispers() end,
+    request = function() ShowPopup() end,
+    city    = function() FillList(false, false, true) end,
+    -- everything at once, laid out so the parts do not overlap
+    all     = function()
+      ShowLegend(true)
+      ShowOnPlate("MISSING", true, anchor2)
+      FillList()
+      ShowCityMini()
+      ShowPopup()
+      ShowWhispers()
+      ShowPvPChat()
+      ShowStatsDemo()
+    end,
+  }
+
+  function ns.Demo(scene)
+    if InCombatLockdown() then Print(L.COMBAT_WAIT) return end
+    scene = scene or ""
+    if scene == "off" then
+      ns.demo = nil
+      Clear()
+      UpdateQueue()
+      Print(L.DEMO_OFF)
+      return
+    end
+    local fn = SCENES[scene]
+    if not fn then
+      for _, l in ipairs(L.DEMO_HELP) do print(l) end
+      return
+    end
+    Clear()
+    ns.demo = nil
+    UpdateQueue() -- real list back first, then the scene paints over it
+    ns.demo = scene
+    fn()
+    Print(L.DEMO_ON:format(scene))
+  end
 end
 
 ------------------------------------------------------------------------
@@ -1530,13 +2014,17 @@ ev:SetScript("OnEvent", function(self, event, arg1, ...)
     self:RegisterEvent("PLAYER_ENTERING_WORLD")
     self:RegisterEvent("ZONE_CHANGED_NEW_AREA")
     self:RegisterEvent("ZONE_CHANGED")
+    self:RegisterEvent("CHAT_MSG_ADDON")
     ApplyBinding()
     RemoveOldMacro()
     self:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
     if BuildOptions then BuildOptions() end
     RestoreQueuePosition()
     if ns.UpdateMinimap then ns.UpdateMinimap() end
-    C_Timer.NewTicker(0.5, function() RefreshAll(); UpdateSmart(); UpdateQueue() end) -- range, expiry, mouseover
+    C_Timer.NewTicker(0.5, function()
+      RefreshAll(); UpdateSmart(); UpdateQueue()
+      if popup:IsShown() or (#incoming > 0 and not InCombatLockdown()) then ShowRequest() end -- expire or resume
+    end)
     Print(L.LOADED)
   elseif event == "SPELLS_CHANGED" then
     BuildSpells()
@@ -1545,6 +2033,8 @@ ev:SetScript("OnEvent", function(self, event, arg1, ...)
     Refresh(arg1)
   elseif event == "NAME_PLATE_UNIT_REMOVED" then
     if InCombatLockdown() then pendingRebuild = true else ReleaseBoth(arg1) end
+  elseif event == "CHAT_MSG_ADDON" then
+    OnAddonMessage(arg1, ...)
   elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
     OnOwnCast(select(2, ...))
   elseif event == "UNIT_AURA" then
@@ -1604,6 +2094,11 @@ SlashCmdList.BUFFBARTER = function(msg)
   local cmd, a, b = strsplit(" ", strtrim(msg or ""):lower())
   if cmd == "" or cmd == "options" or cmd == "config" then
     ns.OpenSettings()
+  elseif cmd == "demo" then
+    ns.Demo(a)
+  elseif cmd == "testrequest" then
+    if InCombatLockdown() then Print(L.COMBAT_WAIT) return end
+    TestRequest()
   elseif cmd == "where" then
     local mapID = C_Map and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
     Print(("map %s, zone %s, city: %s"):format(tostring(mapID), tostring(GetRealZoneText()), tostring(InCity())))
@@ -2194,6 +2689,7 @@ BuildOptions = function()
   Check(L.OPT_OFF_RAID, "offInRaid", zoneChanged)
   Check(L.OPT_OFF_PVP, "offInPvP", zoneChanged)
   Check(L.OPT_REQUEST, "showRequest", RebuildAll)
+  Check(L.OPT_ACCEPT_REQ, "acceptRequests")
   do
     local btn = CreateFrame("Button", nil, c, "UIPanelButtonTemplate")
     btn:SetSize(420, 24)

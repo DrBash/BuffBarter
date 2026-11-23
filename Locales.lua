@@ -135,6 +135,11 @@ L.THANKMODE_whisper = "whisper"
 L.OPT_THANK_TEXT  = "Thank you whisper ({name}, {buff}, {me})"
 L.OPT_MSG_GROUP   = "Also send these automatic whispers to my group and raid members"
 L.OPT_PLATE_ICONS = "Show buff icons above players (off: use only the buff list)"
+L.REQ_POPUP_TITLE = "buff request"
+L.REQ_POPUP       = "%s asks you for %s."
+L.REQ_POPUP_BUFF  = "Buff"
+L.REQ_POPUP_NO    = "No thanks"
+L.OPT_ACCEPT_REQ  = "Accept buff requests from other BuffBarter users (window with a buff button)"
 L.OPT_ONECLICK    = "One click buffs: the icon briefly targets the player, casts and switches back"
 L.OPT_REQUEST     = "Request icons: click a priest, mage, druid or paladin to ask for their buff"
 L.OPT_REQUEST_TEXT = "Request text, when you click a request icon ({name}, {ask}, {me})"
@@ -143,6 +148,20 @@ L.REQ_ASKED       = "asked"
 L.REQ_TIP         = "Click: whisper %s and ask for this buff"
 L.REQ_TIP_ASKED   = "Already asked. You can ask again in %d min."
 L.REQ_NO_WHISPER  = "Whispers are not possible here (inside instances)."
+L.DEMO_ON  = "Demo '%s' shown (invented players, nothing is cast or sent). /barter demo off ends it."
+L.DEMO_OFF = "Demo ended."
+L.DEMO_HELP = {
+  "/barter demo list     buff list with example players",
+  "/barter demo icons    all icon states side by side (above your target, else above you)",
+  "/barter demo ask      buff icon plus request icon",
+  "/barter demo pvp      PvP flagged player: icon, list row, chat warning",
+  "/barter demo dispel   removable debuff: icon and list row",
+  "/barter demo whisper  example whispers in your chat (ask back, request, thanks)",
+  "/barter demo request  buff request window",
+  "/barter demo city     folded list in a capital city",
+  "/barter demo all      everything at once (one screenshot shows it all)",
+  "/barter demo off      end the demo",
+}
 L.HELP = {
   "/barter            open settings",
   "/barter toggle     icons on/off",
@@ -150,6 +169,8 @@ L.HELP = {
   "/barter list       buff list on/off",
   "/barter icons      icons above players on/off",
   "/barter preview    show the whisper for your target",
+  "/barter testrequest show the buff request window with yourself as sender",
+  "/barter demo       example scenes for screenshots (/barter demo for the list)",
   "/barter stats      statistics",
   "/barter lang de|en whisper language for your target",
   "/barter bind KEY   key that buffs the player under your mouse (else target)",
@@ -294,6 +315,11 @@ if GetLocale() == "deDE" then
   L.OPT_THANK_TEXT  = "Dankes-Flüstern ({name}, {buff}, {me})"
   L.OPT_MSG_GROUP   = "Diese automatischen Nachrichten auch an Gruppen- und Raidmitglieder schicken"
   L.OPT_PLATE_ICONS = "Buff-Symbole über den Köpfen anzeigen (aus: nur die Buff-Liste)"
+  L.REQ_POPUP_TITLE = "Buff-Anfrage"
+  L.REQ_POPUP       = "%s bittet dich um %s."
+  L.REQ_POPUP_BUFF  = "Buffen"
+  L.REQ_POPUP_NO    = "Nein danke"
+  L.OPT_ACCEPT_REQ  = "Buff-Anfragen anderer BuffBarter-Nutzer annehmen (Fenster mit Buff-Knopf)"
   L.OPT_ONECLICK    = "Ein Klick bufft: das Symbol wählt den Spieler kurz an, wirkt und wechselt zurück"
   L.OPT_REQUEST     = "Anfrage-Symbole: Priester, Magier, Druiden oder Paladine anklicken und um ihren Buff bitten"
   L.OPT_REQUEST_TEXT = "Text für Anfragen per Klick ({name}, {ask}, {me})"
@@ -302,6 +328,20 @@ if GetLocale() == "deDE" then
   L.REQ_TIP         = "Klick: %s anflüstern und um diesen Buff bitten"
   L.REQ_TIP_ASKED   = "Schon gefragt. Erneut möglich in %d Min."
   L.REQ_NO_WHISPER  = "Flüstern ist hier nicht möglich (in Instanzen)."
+  L.DEMO_ON  = "Demo '%s' angezeigt (erfundene Spieler, es wird nichts gewirkt oder gesendet). /barter demo off beendet sie."
+  L.DEMO_OFF = "Demo beendet."
+  L.DEMO_HELP = {
+    "/barter demo list     Buff-Liste mit Beispielspielern",
+    "/barter demo icons    alle Symbol-Zustände nebeneinander (über deinem Ziel, sonst über dir)",
+    "/barter demo ask      Buff-Symbol plus Anfrage-Symbol",
+    "/barter demo pvp      PvP-geflaggter Spieler: Symbol, Listenzeile, Chat-Warnung",
+    "/barter demo dispel   entfernbarer Debuff: Symbol und Listenzeile",
+    "/barter demo whisper  Beispiel-Flüstern im Chat (Rückfrage, Anfrage, Dank)",
+    "/barter demo request  Fenster für Buff-Anfragen",
+    "/barter demo city     eingeklappte Liste in einer Hauptstadt",
+    "/barter demo all      alles auf einmal (ein Screenshot zeigt alles)",
+    "/barter demo off      Demo beenden",
+  }
   L.HELP = {
     "/barter            Einstellungen öffnen",
     "/barter toggle     Symbole an/aus",
@@ -309,6 +349,8 @@ if GetLocale() == "deDE" then
     "/barter list       Buff-Liste an/aus",
     "/barter icons      Symbole über den Köpfen an/aus",
     "/barter preview    Flüsternachricht für dein Ziel anzeigen",
+    "/barter testrequest Anfrage-Fenster mit dir als Absender anzeigen",
+    "/barter demo       Beispielszenen für Screenshots (/barter demo zeigt die Liste)",
     "/barter stats      Statistik",
     "/barter lang de|en Flüstersprache für dein Ziel",
     "/barter bind TASTE Taste, die den Spieler unter der Maus bufft (sonst Ziel)",

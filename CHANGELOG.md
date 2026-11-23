@@ -1,5 +1,13 @@
 # BuffBarter
 
+## 1.1.0
+
+- Buff requests between BuffBarter users: when you ask someone who also runs BuffBarter, a small window with a Buff button opens on their side. One click buffs you. Limited to one request per player every two minutes, can be switched off in the settings.
+- `/barter testrequest` shows that window with yourself as the sender.
+- `/barter demo`: example scenes with invented players for screenshots (`/barter demo all` shows everything at once). Nothing is cast or sent.
+- Debuff colors fixed: magic, curse, disease and poison have their own colors again on the modern client.
+- Request icons fall back to the spell texture if the spell info is not cached yet.
+
 ## 1.0.0
 
 - Buff list: a fixed, movable list of everyone nearby who needs a buff, yourself included. Click a row to buff.

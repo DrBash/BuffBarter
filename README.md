@@ -4,7 +4,7 @@
 
 **Buff strangers. Get buffed back.**
 
-BuffBarter makes buffing in WoW Forever quick and friendly. It shows who nearby is missing one of your buffs, buffs them with one click, removes diseases, poisons, curses and magic, warns you before you get PvP flagged and lets every class ask others for buffs. A statistics window shows how much you gave, how much you got and who returned the favor.
+BuffBarter makes buffing in WoW Forever quick and friendly. It shows who nearby is missing one of your buffs, buffs them with one click, removes diseases, poisons, curses and magic, warns you before you get PvP flagged and lets every class ask others for buffs. Between BuffBarter users a request even arrives as a window with a buff button. A statistics window shows how much you gave, how much you got and who returned the favor.
 
 Made for **WoW Forever**, including its new camp buffs.
 
@@ -47,6 +47,9 @@ WoW Forever camps hand out weaker copies of class buffs that do not stack with t
 ### Buff requests (every class)
 A small "ask" icon appears next to priests, mages, druids and paladins near your level who can give you a buff you are missing or that runs out soon. One click sends a friendly whisper. A paladin who already blessed you is not asked for a second blessing.
 
+### Buff requests between BuffBarter users
+If the player you ask also uses BuffBarter, they do not just get a whisper: a small window pops up on their screen with your name, the buff and a **Buff** button. One click and you are buffed, no targeting needed. "No thanks" closes it. Requests are limited to one per player every two minutes and can be switched off in the settings. Try it yourself with `/barter testrequest`.
+
 ### Thanks and asking back
 - When someone buffs you, BuffBarter can thank them with your own whisper or a /thank emote.
 - Optionally (off by default) it asks players you buffed for their buff in return.
@@ -86,6 +89,8 @@ Type `/barter`, left click the minimap icon or open *Options > AddOns > BuffBart
 | `/barter bindnext KEY` | Key that buffs the next player from the list |
 | `/barter bind KEY` | Key that buffs the player under your mouse |
 | `/barter preview` | Show the whisper your target would get |
+| `/barter testrequest` | Show the buff request window with yourself as sender |
+| `/barter demo` | Example scenes with invented players, e.g. `/barter demo all`. Nothing is cast or sent. |
 | `/barter lang de` / `en` | Whisper language for your target |
 | `/barter scan` | List buffs with spell IDs on your target |
 | `/barter camp FAMILY ID` | Register a camp buff, e.g. `/barter camp KINGS 123456` |
