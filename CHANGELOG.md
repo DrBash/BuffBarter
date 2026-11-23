@@ -1,5 +1,9 @@
 # BuffBarter
 
+## 1.1.2
+
+- No request icons or ask-backs for buffs you can cast yourself: mages do not ask mages for Arcane Intellect, priests do not ask priests for Fortitude, druids do not ask druids for Mark of the Wild. Paladins still ask other paladins for the blessings they cannot put on themselves at the same time.
+
 ## 1.1.1
 
 - Low level players are no longer asked for buffs they cannot cast yet. A level 12 paladin is asked for Might instead of Kings, and a level 10 priest who buffed you is not asked for a spell they do not have. Players below level 4 are never asked, since even level 1 buffs have to be bought from the trainer first. This applies to the request icons and to asking back.

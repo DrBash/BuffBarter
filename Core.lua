@@ -1103,6 +1103,7 @@ local function AskFamily(class, giverLevel)
     end
     return nil
   end
+  if known[what] then return nil end -- you can cast it yourself
   if not CanGive(what, giverLevel) then return nil end
   if db.askOnlyIfMissing and not Lacking(what) then return nil end
   return what
@@ -1373,6 +1374,7 @@ local function RequestFamily(class, unit)
   end
   local _, myClass = UnitClass("player")
   if ns.NO_WANT[myClass] and ns.NO_WANT[myClass][what] then return nil end
+  if known[what] then return nil end -- a mage does not ask mages for Intellect
   if not CanGive(what, level) then return nil end
   if not Lacking(what) then return nil end
   return what

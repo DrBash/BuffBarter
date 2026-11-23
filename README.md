@@ -45,7 +45,7 @@ If a player is PvP flagged and you are not, the icon shows a faction emblem and 
 WoW Forever camps hand out weaker copies of class buffs that do not stack with the real ones. BuffBarter treats them as "upgrade possible", or as "already buffed" if you prefer.
 
 ### Buff requests (every class)
-A small "ask" icon appears next to priests, mages, druids and paladins near your level who can give you a buff you are missing or that runs out soon. One click sends a friendly whisper. A paladin who already blessed you is not asked for a second blessing, and nobody is asked for a buff they cannot have yet at their level (no Kings before 20, no Wisdom before 14).
+A small "ask" icon appears next to priests, mages, druids and paladins near your level who can give you a buff you are missing or that runs out soon. One click sends a friendly whisper. A paladin who already blessed you is not asked for a second blessing, and nobody is asked for a buff they cannot have yet at their level (no Kings before 20, no Wisdom before 14). You are never offered to ask for a buff you can cast yourself, so mages do not ask mages for Arcane Intellect.
 
 ### Buff requests between BuffBarter users
 If the player you ask also uses BuffBarter, they do not just get a whisper: a small window pops up on their screen with your name, the buff and a **Buff** button. One click and you are buffed, no targeting needed. "No thanks" closes it. Requests are limited to one per player every two minutes and can be switched off in the settings. Try it yourself with `/barter testrequest`.
