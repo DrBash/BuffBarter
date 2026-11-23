@@ -13,7 +13,7 @@ Made for **WoW Forever**, including its new camp buffs.
 | Your class | What you get |
 |---|---|
 | Paladin | Blessings, respecting "one blessing per paladin" (shows when a click would replace your own blessing), Cleanse or Purify |
-| Priest | Power Word: Fortitude, Divine Spirit for mana users (if talented), Dispel Magic, Cure or Abolish Disease |
+| Priest | Power Word: Fortitude, Divine Spirit for mana users, Dispel Magic, Cure or Abolish Disease |
 | Mage | Arcane Intellect (never offered to warriors and rogues), Remove Lesser Curse |
 | Druid | Mark of the Wild, Thorns for players with the tank role, Remove Curse, Cure or Abolish Poison |
 | Shaman | Cure Poison, Cure Disease |
@@ -45,7 +45,7 @@ If a player is PvP flagged and you are not, the icon shows a faction emblem and 
 WoW Forever camps hand out weaker copies of class buffs that do not stack with the real ones. BuffBarter treats them as "upgrade possible", or as "already buffed" if you prefer.
 
 ### Buff requests (every class)
-A small "ask" icon appears next to priests, mages, druids and paladins near your level who can give you a buff you are missing or that runs out soon. One click sends a friendly whisper. A paladin who already blessed you is not asked for a second blessing.
+A small "ask" icon appears next to priests, mages, druids and paladins near your level who can give you a buff you are missing or that runs out soon. One click sends a friendly whisper. A paladin who already blessed you is not asked for a second blessing, and nobody is asked for a buff they cannot have yet at their level (no Kings before 20, no Wisdom before 14).
 
 ### Buff requests between BuffBarter users
 If the player you ask also uses BuffBarter, they do not just get a whisper: a small window pops up on their screen with your name, the buff and a **Buff** button. One click and you are buffed, no targeting needed. "No thanks" closes it. Requests are limited to one per player every two minutes and can be switched off in the settings. Try it yourself with `/barter testrequest`.

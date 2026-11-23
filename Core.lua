@@ -1072,16 +1072,38 @@ local function Lacking(fam)
   return true
 end
 
+-- Level at which a family's first rank is learned (Might 4, Kings 20, ...).
+local function FamMinLevel(fam)
+  local d = ns.BUFFS[fam]
+  if not d then return 1 end
+  return ns.RANK_LEVELS[d.ids[#d.ids]] or 1
+end
+
+-- Can a player of giverLevel cast this buff at all, and can it land on you?
+-- Low level players simply do not have the spell yet (no Kings before 20).
+-- Unknown levels (0, nil, or -1 for "??") are treated as fine.
+-- Level 1 spells still have to be bought from the trainer, and brand new
+-- characters often have not been there yet: nobody below 4 is asked.
+local ASK_GIVER_MIN = 4
+local function CanGive(fam, giverLevel)
+  local min = FamMinLevel(fam)
+  if giverLevel and giverLevel > 0 and giverLevel < math.max(min, ASK_GIVER_MIN) then return false end
+  local me = UnitLevel("player") or 60
+  return me <= 0 or me >= min - 10
+end
+
 -- Which buff to ask this class for, or nil when there is nothing to ask.
-local function AskFamily(class)
+-- giverLevel: level of the player you would ask.
+local function AskFamily(class, giverLevel)
   local what = ns.ASK_FOR[class]
   if not what then return nil end
   if what == "BLESSING" then
     for _, fam in ipairs(ns.SELF_WISH) do
-      if Lacking(fam) then return fam end
+      if Lacking(fam) and CanGive(fam, giverLevel) then return fam end
     end
     return nil
   end
+  if not CanGive(what, giverLevel) then return nil end
   if db.askOnlyIfMissing and not Lacking(what) then return nil end
   return what
 end
@@ -1118,10 +1140,10 @@ local function Template(lang, key)
 end
 
 -- Builds the whisper. Returns text, lang  or nil, lang when nothing to send.
-local function BuildAsk(full, short, realm, class, fam)
+local function BuildAsk(full, short, realm, class, fam, level)
   local lang = LangFor(full)
   local key = ns.ASK_FOR[class] and class or "OTHER"
-  local askFam = AskFamily(class)
+  local askFam = AskFamily(class, level)
   if ns.ASK_FOR[class] and not askFam then return nil, lang end
   local text = Template(lang, key)
   if not text or strtrim(text) == "" then return nil, lang end
@@ -1313,7 +1335,7 @@ local function OnOwnCast(spellID)
   if askedAt[p.full] and GetTime() - askedAt[p.full] < ASK_COOLDOWN then return end
   if p.class == "PALADIN" and HasBlessingFrom(p.unit) then return end
   if GroupMuted(p.unit) then return end
-  local text = BuildAsk(p.full, p.short, p.realm, p.class, p.fam)
+  local text = BuildAsk(p.full, p.short, p.realm, p.class, p.fam, p.level)
   if not text then return end
   local send = (C_ChatInfo and C_ChatInfo.SendChatMessage) or SendChatMessage
   if pcall(send, text, "WHISPER", nil, p.full) then
@@ -1341,15 +1363,17 @@ end
 local function RequestFamily(class, unit)
   local what = ns.ASK_FOR[class]
   if not what then return nil end
+  local level = UnitLevel(unit)
   if what == "BLESSING" then
     if HasBlessingFrom(unit) then return nil end
     for _, fam in ipairs(MyBlessingWish()) do
-      if Lacking(fam) then return fam end
+      if Lacking(fam) and CanGive(fam, level) then return fam end
     end
     return nil
   end
   local _, myClass = UnitClass("player")
   if ns.NO_WANT[myClass] and ns.NO_WANT[myClass][what] then return nil end
+  if not CanGive(what, level) then return nil end
   if not Lacking(what) then return nil end
   return what
 end
@@ -2171,7 +2195,7 @@ SlashCmdList.BUFFBARTER = function(msg)
     local full, short, realm = FullName("target")
     local _, class = UnitClass("target")
     local fam = Decide("target") or "KINGS"
-    local text, lang = BuildAsk(full, short, realm, class, fam)
+    local text, lang = BuildAsk(full, short, realm, class, fam, UnitLevel("target"))
     if text then Print(L.PREVIEW:format(full, lang, text)) else Print(L.PREVIEW_NONE:format(full)) end
   elseif cmd == "lang" then
     if not (UnitExists("target") and UnitIsPlayer("target")) then Print(L.NEED_TARGET) return end

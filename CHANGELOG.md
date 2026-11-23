@@ -1,5 +1,9 @@
 # BuffBarter
 
+## 1.1.1
+
+- Low level players are no longer asked for buffs they cannot cast yet. A level 12 paladin is asked for Might instead of Kings, and a level 10 priest who buffed you is not asked for a spell they do not have. Players below level 4 are never asked, since even level 1 buffs have to be bought from the trainer first. This applies to the request icons and to asking back.
+
 ## 1.1.0
 
 - Buff requests between BuffBarter users: when you ask someone who also runs BuffBarter, a small window with a Buff button opens on their side. One click buffs you. Limited to one request per player every two minutes, can be switched off in the settings.
