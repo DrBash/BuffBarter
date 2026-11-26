@@ -1,5 +1,11 @@
 # BuffBarter
 
+## 1.1.3
+
+- Camp buffs are recognized in Forever's combined "Camp Benefits" aura. BuffBarter reads its tooltip (Fish Bowl, Lodestone, Mana Well, First Aid Kit, Incense Candle, Enchanted Lute, Faction Banner) and treats each object as the class buff it stands in for.
+- A buff that is only covered by a camp buff is offered last: missing buffs come first, and only when nothing else is missing the camp covered one is shown, marked "Camp", so you can still replace the camp buff with the stronger class buff. "Treat camp buffs as buffed" in the settings hides those completely.
+- When a buff bounces with "A more powerful spell is already active" (usually a camp buff that BuffBarter does not know yet), the icon and list entry for that player and buff are hidden for 15 minutes instead of offering the same failing cast again.
+
 ## 1.1.2
 
 - No request icons or ask-backs for buffs you can cast yourself: mages do not ask mages for Arcane Intellect, priests do not ask priests for Fortitude, druids do not ask druids for Mark of the Wild. Paladins still ask other paladins for the blessings they cannot put on themselves at the same time.

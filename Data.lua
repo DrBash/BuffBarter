@@ -92,6 +92,20 @@ ns.CAMP_IDS = {
   -- [123456] = "KINGS",
 }
 
+-- Forever puts all camp objects into one aura, "Camp Benefits", and lists
+-- them in its tooltip. Object name in the tooltip -> family it replaces.
+ns.CAMP_BENEFITS_IDS = { [1229741] = true }
+ns.CAMP_BENEFITS_NAMES = { ["Camp Benefits"] = true, ["Lagervorteile"] = true }
+ns.CAMP_OBJECTS = {
+  ["Fish Bowl"]      = "KINGS",
+  ["Lodestone"]      = "MIGHT",
+  ["Mana Well"]      = "WISDOM",
+  ["First Aid Kit"]  = "FORTITUDE",
+  ["Incense Candle"] = "INTELLECT",
+  ["Enchanted Lute"] = "WILD",
+  ["Faction Banner"] = "SPIRIT",
+}
+
 ------------------------------------------------------------------------
 -- Asking for a buff back
 ------------------------------------------------------------------------

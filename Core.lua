@@ -116,6 +116,7 @@ local function InitDB()
   end
   if db.thankMode == "emote" and not db.thankModeChosen then db.thankMode = "whisper" end
   if not db.askBackChosen then db.askBack = false end
+  if not db.campChosen then db.campCountsAsBuffed = false end
   if (db.schema or 1) < 2 then db.debug = false; db.offset = 0; db.schema = 2 end
 end
 
@@ -154,13 +155,13 @@ local function ForEachBuff(unit, fn)
     for i = 1, 40 do
       local a = C_UnitAuras.GetAuraDataByIndex(unit, i, "HELPFUL")
       if not a then break end
-      fn(a.name, a.spellId, a.sourceUnit, a.expirationTime)
+      fn(a.name, a.spellId, a.sourceUnit, a.expirationTime, i, a.auraInstanceID)
     end
   elseif UnitAura then
     for i = 1, 40 do
       local name, _, _, _, _, exp, src, _, _, id = UnitAura(unit, i, "HELPFUL")
       if not name then break end
-      fn(name, id, src, exp)
+      fn(name, id, src, exp, i)
     end
   end
 end
@@ -307,6 +308,41 @@ local function CampFamily(id)
   return id and (db.campIDs[id] or ns.CAMP_IDS[id])
 end
 
+-- Forever bundles camp objects into one "Camp Benefits" aura whose tooltip
+-- lists them ("Fish Bowl: All stats increased by 8%."). Read the tooltip and
+-- map each object to the class buff it stands in for.
+local benefitCache = {}   -- ["guid:instanceID"] = { fams = { FAM = true }, t = valid until }
+local function IsCampBenefits(name, id)
+  return (id and ns.CAMP_BENEFITS_IDS[id]) or (name and ns.CAMP_BENEFITS_NAMES[name]) or false
+end
+local function ReadBenefits(unit, index, instanceID)
+  if not (C_TooltipInfo and index) then return nil end
+  local key = instanceID and ((UnitGUID(unit) or unit) .. ":" .. instanceID)
+  local hit = key and benefitCache[key]
+  if hit and hit.t > GetTime() then return hit.fams end
+  local ok, data = pcall(C_TooltipInfo.GetUnitAura, unit, index, "HELPFUL")
+  if not ok or not data or not data.lines then return nil end
+  local fams = {}
+  for _, line in ipairs(data.lines) do
+    local text = line.leftText
+    if type(text) == "string" then
+      for obj, fam in pairs(ns.CAMP_OBJECTS) do
+        if text:find(obj, 1, true) then fams[fam] = true end
+      end
+    end
+  end
+  if key then benefitCache[key] = { fams = fams, t = GetTime() + 30 } end
+  return fams
+end
+
+-- Families a camp aura counts for, or nil.
+local function CampFamilies(unit, name, id, index, instanceID)
+  local single = CampFamily(id)
+  if single then return { [single] = true } end
+  if IsCampBenefits(name, id) then return ReadBenefits(unit, index, instanceID) end
+end
+ns.CampFamilies = CampFamilies
+
 ------------------------------------------------------------------------
 -- Decision logic
 ------------------------------------------------------------------------
@@ -315,7 +351,7 @@ end
 local function ReadUnit(unit)
   local st, myFam, myLeft = {}, nil, nil
   local now = GetTime()
-  ForEachBuff(unit, function(name, id, src, exp)
+  ForEachBuff(unit, function(name, id, src, exp, index, inst)
     local fam = (id and idToFamily[id]) or (name and nameToFamily[name])
     if fam then
       local s = st[fam] or {}; st[fam] = s
@@ -328,14 +364,33 @@ local function ReadUnit(unit)
       end
       return
     end
-    local cf = CampFamily(id)
+    local cf = CampFamilies(unit, name, id, index, inst)
     if cf then
-      st[cf] = st[cf] or {}
-      st[cf].camp = true
+      for f in pairs(cf) do
+        st[f] = st[f] or {}
+        st[f].camp = true
+      end
     end
   end)
   return st, myFam, myLeft
 end
+
+-- "A more powerful spell is already active": the target carries something
+-- stronger (usually a camp buff BuffBarter does not know). Remember that
+-- for a while so the icon does not keep offering a cast that cannot land.
+local bounced = {}     -- ["First Last:FAM"] = time until which to skip
+local BOUNCE_TIME = 15 * 60
+local function BounceKey(unit)
+  local first, last = UnitName(unit)
+  if not first then return end
+  return (last and last ~= "") and (first .. " " .. last) or first
+end
+local function IsBounced(unit, fam)
+  local k = BounceKey(unit)
+  local t = k and bounced[k .. ":" .. fam]
+  return t and t > GetTime() or false
+end
+ns.bounced, ns.BounceKey, ns.BOUNCE_TIME = bounced, BounceKey, BOUNCE_TIME
 
 -- Returns FAMILY, STATE, myFam, myLeft or nil when nothing to do.
 -- STATE: MISSING, CAMP, EXPIRING, SWAP
@@ -343,23 +398,24 @@ end
 local function DecideGeneric(unit, order, class, role)
   local ok, st = pcall(ReadUnit, unit)
   if not ok then return end
+  local campFam
   for _, fam in ipairs(order) do
     local w = ns.WANTS[fam]
     local wanted = known[fam]
       and not (w and w.notFor and w.notFor[class])
       and not (w and w.tankOnly and role ~= "TANK")
-    if wanted then
+    if wanted and not IsBounced(unit, fam) then
       local s = st[fam]
       if s and s.own then
         if s.own <= db.expireMins * 60 then return fam, "EXPIRING", nil, s.own end
       elseif not (s and s.other) then
-        local camp = s and s.camp
-        if not (camp and db.campCountsAsBuffed) then
-          return fam, camp and "CAMP" or "MISSING"
-        end
+        if not (s and s.camp) then return fam, "MISSING" end
+        campFam = campFam or fam
       end
     end
   end
+  -- Only a camp buff left to improve on: offer it last, marked "Camp".
+  if campFam and not db.campCountsAsBuffed then return campFam, "CAMP" end
 end
 
 local function Decide(unit)
@@ -385,15 +441,17 @@ local function Decide(unit)
     return
   end
 
+  -- Missing blessings first; one only covered by a camp buff comes last.
+  local campFam
   for _, fam in ipairs(prio) do
     local s = st[fam]
-    if known[fam] and not (s and (s.own or s.other)) then
-      local camp = s and s.camp
-      if not (camp and db.campCountsAsBuffed) then
-        local state = myFam and "SWAP" or (camp and "CAMP" or "MISSING")
-        return fam, state, myFam, myLeft
-      end
+    if known[fam] and not (s and (s.own or s.other)) and not IsBounced(unit, fam) then
+      if not (s and s.camp) then return fam, myFam and "SWAP" or "MISSING", myFam, myLeft end
+      campFam = campFam or fam
     end
+  end
+  if campFam and not db.campCountsAsBuffed then
+    return campFam, myFam and "SWAP" or "CAMP", myFam, myLeft
   end
 end
 
@@ -1037,14 +1095,17 @@ end
 local function PlayerHas(fam)
   local res, left
   local now = GetTime()
-  pcall(ForEachBuff, "player", function(name, id, src, exp)
+  pcall(ForEachBuff, "player", function(name, id, src, exp, index, inst)
     local f = (id and (otherIdToFam[id] or idToFamily[id])) or (name and (otherNameToFam[name] or nameToFamily[name]))
     if f == fam then
       res = "class"
       local l = (exp and exp > 0) and (exp - now) or 3600
       left = math.max(left or 0, l)
     end
-    if not res and CampFamily(id) == fam then res = "camp" end
+    if not res then
+      local cf = CampFamilies("player", name, id, index, inst)
+      if cf and cf[fam] then res = "camp" end
+    end
   end)
   return res, left
 end
@@ -1220,7 +1281,7 @@ function ns.Remember(unit, fam)
   local raceName, race = UnitRace(unit)
   if not full or UnitIsUnit(unit, "player") then return end
   pending = { full = full, short = short, realm = realm, class = class, race = race, raceName = raceName,
-              unit = unit,
+              unit = unit, key = ns.BounceKey(unit),
               level = UnitLevel(unit),
               fam = fam, t = GetTime() }
 end
@@ -1313,6 +1374,20 @@ local function OnPlayerAura(info)
       end
     end)
   end
+end
+
+-- Your click hit "A more powerful spell is already active".
+function ns.OnCastError(msg)
+  if type(msg) ~= "string" then return end
+  local bouncedMsg = SPELL_FAILED_AURA_BOUNCED or "A more powerful spell is already active"
+  if msg ~= bouncedMsg and not msg:lower():find("more powerful", 1, true) then return end
+  local p = pending
+  if not (p and p.key and GetTime() - p.t <= 3) then return end
+  pending = nil
+  ns.bounced[p.key .. ":" .. p.fam] = GetTime() + ns.BOUNCE_TIME
+  local name = known[p.fam] and known[p.fam].name or p.fam
+  Print(L.BOUNCED:format(p.short or p.key, name, ns.BOUNCE_TIME / 60))
+  if not InCombatLockdown() then RefreshAll(); UpdateQueue() end
 end
 
 local function OnOwnCast(spellID)
@@ -2082,7 +2157,9 @@ ev:SetScript("OnEvent", function(self, event, arg1, ...)
   elseif event == "ADDON_ACTION_BLOCKED" or event == "ADDON_ACTION_FORBIDDEN" then
     if db.debug then Print(("%s: %s  %s"):format(event, tostring(arg1), tostring(select(1, ...) or ""))) end
   elseif event == "UI_ERROR_MESSAGE" then
-    if db.debug then Print("UI error: " .. tostring(select(1, ...))) end
+    local msg = select(1, ...)
+    if db.debug then Print("UI error: " .. tostring(msg)) end
+    ns.OnCastError(msg)
   end
 end)
 
@@ -2100,12 +2177,18 @@ local function Scan()
   local unit = UnitExists("target") and "target" or "player"
   local who = UnitName(unit) or unit
   local lines, now = {}, GetTime()
-  local ok = pcall(ForEachBuff, unit, function(name, id, src, exp)
+  local ok = pcall(ForEachBuff, unit, function(name, id, src, exp, index, inst)
     local from = src and (UnitName(src) or src) or "?"
     local left = (exp and exp > 0) and ("%dm"):format(math.floor((exp - now) / 60)) or ""
     local tag = ""
+    local cf = CampFamilies(unit, name, id, index, inst)
     if id and idToFamily[id] then tag = "[" .. idToFamily[id] .. "]"
-    elseif CampFamily(id) then tag = "[" .. L.CAMP .. ":" .. CampFamily(id) .. "]" end
+    elseif cf then
+      local t = {}
+      for f in pairs(cf) do t[#t + 1] = f end
+      table.sort(t)
+      tag = "[" .. L.CAMP .. ":" .. (#t > 0 and table.concat(t, ",") or "?") .. "]"
+    end
     lines[#lines + 1] = L.SCAN_LINE:format(tostring(name), tostring(id), from, left .. " " .. tag)
   end)
   if not ok or #lines == 0 then Print(L.SCAN_NONE:format(who)) return end
@@ -2703,7 +2786,7 @@ BuildOptions = function()
   Check(L.OPT_PLATE_ICONS, "plateIcons", RebuildAll)
   Check(L.OPT_MINIMAP, "minimap", function() ns.UpdateMinimap() end)
   Check(L.OPT_STRANGERS, "strangers", RebuildAll)
-  Check(L.OPT_CAMPBUFFED, "campCountsAsBuffed", RebuildAll)
+  Check(L.OPT_CAMPBUFFED, "campCountsAsBuffed", function() db.campChosen = true; RebuildAll() end)
   Check(L.OPT_ONECLICK, "oneClick", RebuildAll)
   Check(L.OPT_QUEUE, "showQueue")
   Check(L.OPT_QUEUE_LOCK, "queueLocked")

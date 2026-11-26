@@ -148,6 +148,7 @@ L.REQ_ASKED       = "asked"
 L.REQ_TIP         = "Click: whisper %s and ask for this buff"
 L.REQ_TIP_ASKED   = "Already asked. You can ask again in %d min."
 L.REQ_NO_WHISPER  = "Whispers are not possible here (inside instances)."
+L.BOUNCED = "%s already has something stronger than your %s (probably a camp buff). Hidden for %d minutes."
 L.DEMO_ON  = "Demo '%s' shown (invented players, nothing is cast or sent). /barter demo off ends it."
 L.DEMO_OFF = "Demo ended."
 L.DEMO_HELP = {
@@ -328,6 +329,7 @@ if GetLocale() == "deDE" then
   L.REQ_TIP         = "Klick: %s anflüstern und um diesen Buff bitten"
   L.REQ_TIP_ASKED   = "Schon gefragt. Erneut möglich in %d Min."
   L.REQ_NO_WHISPER  = "Flüstern ist hier nicht möglich (in Instanzen)."
+  L.BOUNCED = "%s hat schon etwas Stärkeres als dein %s (wahrscheinlich ein Lagerbuff). %d Minuten ausgeblendet."
   L.DEMO_ON  = "Demo '%s' angezeigt (erfundene Spieler, es wird nichts gewirkt oder gesendet). /barter demo off beendet sie."
   L.DEMO_OFF = "Demo beendet."
   L.DEMO_HELP = {
